@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Support.php
 
 namespace App\Models;
@@ -12,11 +13,12 @@ class Support extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
         'id', 'user_id', 'type', 'description', 'file_path',
-        'status', 'assigned_to'
+        'status', 'assigned_to',
     ];
 
     /**

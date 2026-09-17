@@ -1,24 +1,27 @@
 <?php
-// app/Models/User.php
 
 namespace App\Models;
 
-use Laravel\Passport\HasApiTokens;
-use Illuminate\Notifications\Notifiable;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Foundation\Auth\User as Authenticatable;
-use App\Traits\HasUUID;
 use App\Enums\UserRole;
-use Laravel\Passport\Contracts\OAuthenticatable;
+use App\Traits\HasUUID;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
 use Spatie\Permission\Traits\HasRoles;
-class User extends Authenticatable implements OAuthenticatable
+
+class User extends Authenticatable
 {
-    use HasApiTokens, HasFactory, Notifiable, HasUUID ,HasRoles;
+    use HasApiTokens, HasFactory, HasRoles, HasUUID, Notifiable;
+
     protected string $guard_name = 'api';
+
     protected $fillable = [
-        'id', 'name', 'email', 'password', 'role',
-        'whatsapp_number', 'is_active', 'last_login' ,
-        'phone_verified_at', 'login_attempts',
+        'name', 'email', 'password', 'role',
+        'whatsapp_number', 'is_active', 'last_login',
+        'phone_verified_at', 'login_attempts', 'deletion_scheduled_at',
     ];
 
     protected $hidden = [
@@ -27,58 +30,63 @@ class User extends Authenticatable implements OAuthenticatable
 
     protected $casts = [
         'email_verified_at' => 'datetime',
+        'phone_verified_at' => 'datetime',
         'last_login' => 'datetime',
+        'deletion_scheduled_at' => 'datetime',
         'is_active' => 'boolean',
         'role' => UserRole::class,
     ];
 
-    // العلاقات
-    public function patient()
+    public function patient(): HasOne
     {
         return $this->hasOne(Patient::class, 'user_id');
     }
 
-    public function therapist()
+    public function therapist(): HasOne
     {
         return $this->hasOne(Therapist::class, 'user_id');
     }
 
-    public function sentMessages()
+    public function sentMessages(): HasMany
     {
         return $this->hasMany(Message::class, 'sender_id');
     }
 
-    public function receivedMessages()
+    public function receivedMessages(): HasMany
     {
         return $this->hasMany(Message::class, 'receiver_id');
     }
 
-    public function supports()
+    public function supports(): HasMany
     {
         return $this->hasMany(Support::class, 'user_id');
     }
 
-    public function assignedSupports()
+    public function assignedSupports(): HasMany
     {
         return $this->hasMany(Support::class, 'assigned_to');
     }
 
-    public function documentRequests()
+    public function documentRequests(): HasMany
     {
         return $this->hasMany(DocumentRequest::class, 'user_id');
     }
 
-    public function reviewedDocuments()
+    public function reviewedDocuments(): HasMany
     {
         return $this->hasMany(DocumentRequest::class, 'reviewer_id');
     }
 
-    public function auditLogs()
+    public function auditLogs(): HasMany
     {
         return $this->hasMany(AuditLog::class, 'user_id');
     }
 
-    // Helper Methods
+    public function assignedRedFlags(): HasMany
+    {
+        return $this->hasMany(RedFlag::class, 'assigned_to');
+    }
+
     public function isPatient(): bool
     {
         return $this->role === UserRole::PATIENT;
@@ -91,16 +99,11 @@ class User extends Authenticatable implements OAuthenticatable
 
     public function isAdmin(): bool
     {
-        return in_array($this->role, [UserRole::ADMIN, UserRole::SUPER_ADMIN]);
+        return in_array($this->role, [UserRole::ADMIN, UserRole::SUPER_ADMIN], true);
     }
 
-    public function isActive(): bool
+    public function isVerified(): bool
     {
-        return $this->is_active;
-    }
-
-    public function markAsLoggedIn(): void
-    {
-        $this->update(['last_login' => now()]);
+        return $this->phone_verified_at !== null;
     }
 }

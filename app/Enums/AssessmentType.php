@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/AssessmentType.php
 
 namespace App\Enums;
@@ -10,7 +11,7 @@ enum AssessmentType: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::PHQ9 => 'PHQ-9',
             self::GAD7 => 'GAD-7',
         };
@@ -18,7 +19,7 @@ enum AssessmentType: string
 
     public function maxScore(): int
     {
-        return match($this) {
+        return match ($this) {
             self::PHQ9 => 27,
             self::GAD7 => 21,
         };

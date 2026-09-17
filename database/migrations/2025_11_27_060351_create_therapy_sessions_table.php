@@ -1,5 +1,4 @@
 <?php
-// database/migrations/xxxx_xx_xx_xxxxxx_create_sessions_table.php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -7,17 +6,18 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    public function up()
+    public function up(): void
     {
-        Schema::create('sessions', function (Blueprint $table) {
+        Schema::create('therapy_sessions', function (Blueprint $table) {
             $table->uuid('id')->primary();
 
-            // Foreign keys
-            $table->uuid('patient_id');
-            $table->foreign('patient_id')->references('user_id')->on('patients')->onDelete('cascade');
+            $table->foreignUuid('patient_id')
+                ->references('user_id')->on('patients')
+                ->cascadeOnDelete();
 
-            $table->uuid('therapist_id');
-            $table->foreign('therapist_id')->references('user_id')->on('therapists')->onDelete('cascade');
+            $table->foreignUuid('therapist_id')
+                ->references('user_id')->on('therapists')
+                ->cascadeOnDelete();
 
             $table->date('session_date');
             $table->time('session_time');
@@ -32,17 +32,15 @@ return new class extends Migration
 
             $table->timestamps();
 
-            // Indexes
-            $table->index('patient_id');
-            $table->index('therapist_id');
-            $table->index('session_date');
+            $table->index(['patient_id', 'session_date']);
+            $table->index(['therapist_id', 'session_date']);
             $table->index('status');
             $table->index('payment_status');
         });
     }
 
-    public function down()
+    public function down(): void
     {
-        Schema::dropIfExists('sessions');
+        Schema::dropIfExists('therapy_sessions');
     }
 };

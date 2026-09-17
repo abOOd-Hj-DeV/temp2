@@ -1,5 +1,4 @@
 <?php
-// database/migrations/xxxx_xx_xx_xxxxxx_create_red_flags_table.php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -7,19 +6,27 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    public function up()
+    public function up(): void
     {
         Schema::create('red_flags', function (Blueprint $table) {
             $table->uuid('id')->primary();
 
-            $table->uuid('patient_id');
-            $table->foreign('patient_id')->references('user_id')->on('patients')->onDelete('cascade');
+            $table->foreignUuid('patient_id')
+                ->references('user_id')->on('patients')
+                ->cascadeOnDelete();
+
+            $table->uuid('assessment_id')->nullable();
+            $table->foreign('assessment_id')
+                ->references('id')->on('assessments')
+                ->nullOnDelete();
 
             $table->enum('type', ['low_mood', 'non_compliance', 'safety']);
             $table->text('description');
 
-            $table->uuid('assigned_to'); // المستخدم المسؤول
-            $table->foreign('assigned_to')->references('id')->on('users')->onDelete('cascade');
+            // null = not yet assigned to a staff member
+            $table->foreignUuid('assigned_to')->nullable()
+                ->references('id')->on('users')
+                ->nullOnDelete();
 
             $table->enum('status', ['open', 'resolved'])->default('open');
             $table->text('action_taken')->nullable();
@@ -27,8 +34,7 @@ return new class extends Migration
 
             $table->timestamps();
 
-            // Indexes
-            $table->index('patient_id');
+            $table->index(['patient_id', 'status']);
             $table->index('assigned_to');
             $table->index('status');
             $table->index('priority');
@@ -36,7 +42,7 @@ return new class extends Migration
         });
     }
 
-    public function down()
+    public function down(): void
     {
         Schema::dropIfExists('red_flags');
     }

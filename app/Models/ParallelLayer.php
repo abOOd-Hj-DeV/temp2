@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/ParallelLayer.php
 
 namespace App\Models;
@@ -12,10 +13,11 @@ class ParallelLayer extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'patient_id', 'therapist_id', 'content', 'edit_log'
+        'id', 'patient_id', 'therapist_id', 'content', 'edit_log',
     ];
 
     protected $casts = [

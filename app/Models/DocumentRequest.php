@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/DocumentRequest.php
 
 namespace App\Models;
@@ -12,11 +13,12 @@ class DocumentRequest extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
         'id', 'user_id', 'doc_type', 'file_path',
-        'reason', 'status', 'reviewer_id', 'timestamp'
+        'reason', 'status', 'reviewer_id', 'timestamp',
     ];
 
     protected $casts = [
@@ -53,7 +55,7 @@ class DocumentRequest extends Model
     /**
      * رفض المستند
      */
-    public function reject(string $reviewerId, string $reason = null): void
+    public function reject(string $reviewerId, ?string $reason = null): void
     {
         $this->update([
             'status' => 'rejected',

@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/SafetyPlan.php
 
 namespace App\Models;
@@ -12,11 +13,12 @@ class SafetyPlan extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
         'id', 'patient_id', 'contact_info', 'coping_strategies',
-        'emergency_contacts', 'warning_signs'
+        'emergency_contacts', 'warning_signs',
     ];
 
     protected $casts = [

@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/ComplianceLevel.php
 
 namespace App\Enums;
@@ -11,7 +12,7 @@ enum ComplianceLevel: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::HIGH => 'High',
             self::MEDIUM => 'Medium',
             self::LOW => 'Low',
@@ -20,7 +21,7 @@ enum ComplianceLevel: string
 
     public function scoreRange(): array
     {
-        return match($this) {
+        return match ($this) {
             self::HIGH => [80, 100],
             self::MEDIUM => [50, 79],
             self::LOW => [0, 49],

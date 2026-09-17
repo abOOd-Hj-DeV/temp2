@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/SessionStatus.php
 
 namespace App\Enums;
@@ -12,7 +13,7 @@ enum SessionStatus: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::PENDING => 'Pending',
             self::CONFIRMED => 'Confirmed',
             self::COMPLETED => 'Completed',

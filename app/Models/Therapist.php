@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Therapist.php
 
 namespace App\Models;
@@ -13,13 +14,15 @@ class Therapist extends Model
     use HasFactory;
 
     protected $primaryKey = 'user_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
         'user_id', 'full_name', 'specialty', 'country', 'languages',
         'license_file_path', 'bio', 'rating', 'availability',
-        'approval_status', 'clients_count', 'clients_limit'
+        'approval_status', 'clients_count', 'clients_limit',
     ];
 
     protected $casts = [
@@ -51,7 +54,7 @@ class Therapist extends Model
      */
     public function sessions(): HasMany
     {
-        return $this->hasMany(Session::class, 'therapist_id', 'user_id');
+        return $this->hasMany(TherapySession::class, 'therapist_id', 'user_id');
     }
 
     /**

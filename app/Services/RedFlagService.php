@@ -1,186 +1,123 @@
 <?php
-// app/Services/RedFlagService.php
 
 namespace App\Services;
 
-use App\Models\Assessment;
-use App\Enums\RedFlagType;
 use App\Enums\RedFlagPriority;
+use App\Enums\RedFlagType;
+use App\Enums\UserRole;
+use App\Models\Assessment;
+use App\Models\RedFlag;
+use App\Models\User;
 use App\Repositories\Contracts\RedFlagRepositoryInterface;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Creates and manages clinical red flags raised by assessments
+ * and other safety signals.
+ */
 class RedFlagService
 {
     public function __construct(
-        private RedFlagRepositoryInterface $redFlagRepository,
-        private NotificationService $notificationService
+        private RedFlagRepositoryInterface $redFlags,
+        private NotificationService $notifications,
     ) {}
 
     /**
-     * إنشاء Red Flag من تقييم حرج
+     * Persist a red flag for a critical assessment and alert the assignee.
+     * Never throws: a notification failure must not lose the flag itself.
      */
-    public function createFromAssessment(Assessment $assessment): ?\App\Models\RedFlag
-    {
+    public function createFromAssessment(
+        Assessment $assessment,
+        RedFlagType $type,
+        RedFlagPriority $priority,
+        string $description,
+    ): RedFlag {
+        $redFlag = $this->redFlags->create([
+            'patient_id' => $assessment->patient_id,
+            'assessment_id' => $assessment->id,
+            'type' => $type->value,
+            'description' => $description,
+            'priority' => $priority->value,
+            'assigned_to' => $this->defaultAssignee()?->id,
+            'status' => 'open',
+        ]);
+
         try {
-            // 1. إنشاء Red Flag باستخدام الـ Repository
-            $redFlag = $this->redFlagRepository->create([
-                'patient_id' => $assessment->patient_id,
-                'type' => $this->getRedFlagType($assessment->type),
-                'description' => $this->generateDescription($assessment),
-                'priority' => $this->determinePriority($assessment->score),
-                'assessment_id' => $assessment->id,
-                'status' => 'open'
-            ]);
-
-            // 2. إرسال الإشعارات
-            $this->notificationService->sendRedFlagNotifications($redFlag, $assessment);
-
-            Log::info('Red Flag created successfully', [
-                'assessment_id' => $assessment->id,
+            $this->notifications->redFlagRaised($redFlag);
+        } catch (\Throwable $e) {
+            Log::error('Red flag notification failed', [
                 'red_flag_id' => $redFlag->id,
-                'score' => $assessment->score
+                'error' => $e->getMessage(),
             ]);
-
-            return $redFlag;
-
-        } catch (\Exception $e) {
-            Log::error('Failed to create Red Flag', [
-                'assessment_id' => $assessment->id,
-                'error' => $e->getMessage()
-            ]);
-            return null;
         }
+
+        Log::info('Red flag created', [
+            'red_flag_id' => $redFlag->id,
+            'patient_id' => $assessment->patient_id,
+            'priority' => $priority->value,
+        ]);
+
+        return $redFlag;
     }
 
-    /**
-     * الحصول على Red Flags لمريض معين
-     */
     public function getPatientRedFlags(string $patientId): array
     {
-        $redFlags = $this->redFlagRepository->findByPatientId($patientId);
-
-        return $redFlags->map(function ($redFlag) {
-            return [
-                'id' => $redFlag->id,
-                'type' => $redFlag->type,
-                'description' => $redFlag->description,
-                'priority' => $redFlag->priority,
-                'status' => $redFlag->status,
-                'created_at' => $redFlag->created_at->format('Y-m-d H:i'),
-                'action_taken' => $redFlag->action_taken
-            ];
-        })->toArray();
+        return $this->redFlags->findByPatientId($patientId)
+            ->map(fn (RedFlag $flag) => $this->toArray($flag))
+            ->all();
     }
 
-    /**
-     * الحصول على Red Flags المفتوحة
-     */
     public function getOpenRedFlags(array $filters = []): array
     {
-        $redFlags = $this->redFlagRepository->getOpenRedFlags($filters);
-
-        return $redFlags->map(function ($redFlag) {
-            return $this->formatRedFlagResponse($redFlag);
-        })->toArray();
+        return $this->redFlags->getOpenRedFlags($filters)
+            ->map(fn (RedFlag $flag) => $this->toArray($flag))
+            ->all();
     }
 
-    /**
-     * تحديث حالة Red Flag
-     */
-    public function updateRedFlagStatus(string $redFlagId, string $status, ?string $actionTaken = null): bool
+    public function updateStatus(string $redFlagId, string $status, ?string $actionTaken = null): bool
     {
-        return $this->redFlagRepository->updateStatus($redFlagId, $status, $actionTaken);
+        return $this->redFlags->updateStatus($redFlagId, $status, $actionTaken);
     }
 
-    /**
-     * تعيين Red Flag لمستخدم
-     */
-    public function assignRedFlag(string $redFlagId, string $userId): bool
+    public function assignTo(string $redFlagId, string $userId): bool
     {
-        return $this->redFlagRepository->assignTo($redFlagId, $userId);
+        return $this->redFlags->assignTo($redFlagId, $userId);
     }
 
-    /**
-     * الحصول على إحصائيات Red Flags
-     */
-    public function getRedFlagStats(array $filters = []): array
+    public function getStats(array $filters = []): array
     {
-        return $this->redFlagRepository->getStats($filters);
+        return $this->redFlags->getStats($filters);
     }
 
     /**
-     * تنسيق استجابة Red Flag
+     * The first active clinical supervisor owns new flags; falls back to
+     * super_admin, then to null (unassigned) when no staff exists yet.
      */
-    private function formatRedFlagResponse(\App\Models\RedFlag $redFlag): array
+    private function defaultAssignee(): ?User
+    {
+        foreach ([UserRole::CLINICAL_SUPERVISOR, UserRole::SUPER_ADMIN, UserRole::ADMIN] as $role) {
+            $assignee = User::where('role', $role->value)->where('is_active', true)->first();
+            if ($assignee) {
+                return $assignee;
+            }
+        }
+
+        return null;
+    }
+
+    private function toArray(RedFlag $flag): array
     {
         return [
-            'id' => $redFlag->id,
-            'patient' => $redFlag->patient ? [
-                'id' => $redFlag->patient->user_id,
-                'name' => $redFlag->patient->full_name
-            ] : null,
-            'type' => $redFlag->type,
-            'description' => $redFlag->description,
-            'priority' => $redFlag->priority,
-            'status' => $redFlag->status,
-            'created_at' => $redFlag->created_at->format('Y-m-d H:i:s'),
-            'action_taken' => $redFlag->action_taken,
-            'assigned_to' => $redFlag->assigned_to,
-            'assessment' => $redFlag->assessment ? [
-                'id' => $redFlag->assessment->id,
-                'type' => $redFlag->assessment->type,
-                'score' => $redFlag->assessment->score,
-                'date' => $redFlag->assessment->completed_at->format('Y-m-d H:i:s')
-            ] : null
+            'id' => $flag->id,
+            'patient_id' => $flag->patient_id,
+            'type' => $flag->type->value,
+            'priority' => $flag->priority->value,
+            'status' => $flag->status,
+            'description' => $flag->description,
+            'action_taken' => $flag->action_taken,
+            'assigned_to' => $flag->assigned_to,
+            'assessment_id' => $flag->assessment_id,
+            'created_at' => $flag->created_at?->toISOString(),
         ];
-    }
-
-    // ========== الدوال المساعدة ==========
-
-    /**
-     * تحديد نوع Red Flag بناءً على نوع التقييم
-     */
-    private function getRedFlagType(string $assessmentType): string
-    {
-        return match($assessmentType) {
-            'phq9' => RedFlagType::LOW_MOOD->value,
-            'gad7' => RedFlagType::LOW_MOOD->value,
-            default => RedFlagType::SAFETY->value
-        };
-    }
-
-    /**
-     * تحديد أولوية Red Flag بناءً على النتيجة
-     */
-    private function determinePriority(int $score): string
-    {
-        if ($score >= 20) {
-            return RedFlagPriority::HIGH->value;
-        } elseif ($score >= 15) {
-            return RedFlagPriority::MEDIUM->value;
-        } else {
-            return RedFlagPriority::LOW->value;
-        }
-    }
-
-    /**
-     * توليد وصف Red Flag
-     */
-    private function generateDescription(Assessment $assessment): string
-    {
-        $type = $assessment->type === 'phq9' ? 'PHQ-9' : 'GAD-7';
-        $severity = $this->getSeverityText($assessment->score);
-
-        return "Patient scored {$assessment->score} on {$type} assessment ({$severity} severity). Requires immediate attention.";
-    }
-
-    /**
-     * الحصول على نص مستوى الخطورة
-     */
-    private function getSeverityText(int $score): string
-    {
-        if ($score >= 20) return 'severe';
-        if ($score >= 15) return 'moderate';
-        return 'mild';
     }
 }

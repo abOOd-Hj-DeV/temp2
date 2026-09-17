@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/UserRole.php
 
 namespace App\Enums;
@@ -16,7 +17,7 @@ enum UserRole: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::PATIENT => 'Patient',
             self::THERAPIST => 'Therapist',
             self::SUPER_ADMIN => 'Super Admin',

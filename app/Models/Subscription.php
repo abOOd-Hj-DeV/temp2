@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Subscription.php
 
 namespace App\Models;
@@ -13,11 +14,12 @@ class Subscription extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
         'id', 'patient_id', 'type', 'start_date', 'end_date',
-        'price', 'payment_proof_path', 'verification_status', 'content'
+        'price', 'payment_proof_path', 'verification_status', 'content',
     ];
 
     protected $casts = [

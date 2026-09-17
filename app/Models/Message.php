@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Message.php
 
 namespace App\Models;
@@ -12,11 +13,12 @@ class Message extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
         'id', 'sender_id', 'receiver_id', 'content',
-        'file_path', 'timestamp', 'is_read'
+        'file_path', 'timestamp', 'is_read',
     ];
 
     protected $casts = [

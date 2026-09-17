@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Module.php
 
 namespace App\Models;
@@ -13,11 +14,12 @@ class Module extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
         'id', 'program_id', 'title', 'description',
-        'content_type', 'exercise', 'tracking_tools', 'order'
+        'content_type', 'exercise', 'tracking_tools', 'order',
     ];
 
     protected $casts = [

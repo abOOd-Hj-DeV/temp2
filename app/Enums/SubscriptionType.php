@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/SubscriptionType.php
 
 namespace App\Enums;
@@ -10,7 +11,7 @@ enum SubscriptionType: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::FOUR_WEEKS => '4 Weeks',
             self::EIGHT_WEEKS => '8 Weeks',
         };
@@ -18,7 +19,7 @@ enum SubscriptionType: string
 
     public function durationInWeeks(): int
     {
-        return match($this) {
+        return match ($this) {
             self::FOUR_WEEKS => 4,
             self::EIGHT_WEEKS => 8,
         };
