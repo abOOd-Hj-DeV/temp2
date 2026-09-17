@@ -1,10 +1,12 @@
 <?php
+
 // app/Repositories/Eloquent/RedFlagRepository.php
 
 namespace App\Repositories\Eloquent;
 
 use App\Models\RedFlag;
 use App\Repositories\Contracts\RedFlagRepositoryInterface;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 
 class RedFlagRepository implements RedFlagRepositoryInterface
@@ -14,7 +16,7 @@ class RedFlagRepository implements RedFlagRepositoryInterface
         return RedFlag::with(['patient', 'assessment'])->find($id);
     }
 
-    public function findByPatientId(string $patientId): \Illuminate\Database\Eloquent\Collection
+    public function findByPatientId(string $patientId): Collection
     {
         return RedFlag::with('assessment')
             ->where('patient_id', $patientId)
@@ -44,7 +46,7 @@ class RedFlagRepository implements RedFlagRepositoryInterface
             ->first();
     }
 
-    public function getOpenRedFlags(array $filters = []): \Illuminate\Database\Eloquent\Collection
+    public function getOpenRedFlags(array $filters = []): Collection
     {
         $query = RedFlag::with(['patient', 'assessment'])
             ->where('status', 'open');
@@ -80,7 +82,7 @@ class RedFlagRepository implements RedFlagRepositoryInterface
     {
         return RedFlag::where('id', $id)->update([
             'assigned_to' => $userId,
-            'updated_at' => now()
+            'updated_at' => now(),
         ]);
     }
 
@@ -104,7 +106,7 @@ class RedFlagRepository implements RedFlagRepositoryInterface
             'by_type' => $query->select('type', DB::raw('count(*) as count'))
                 ->groupBy('type')
                 ->pluck('count', 'type')
-                ->toArray()
+                ->toArray(),
         ];
     }
 }

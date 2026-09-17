@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/SupportType.php
 
 namespace App\Enums;
@@ -10,7 +11,7 @@ enum SupportType: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::TECHNICAL => 'Technical',
             self::CLINICAL => 'Clinical',
         };

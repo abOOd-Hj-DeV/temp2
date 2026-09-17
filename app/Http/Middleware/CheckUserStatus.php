@@ -1,4 +1,5 @@
 <?php
+
 // app/Http/Middleware/CheckUserStatus.php
 
 namespace App\Http\Middleware;
@@ -13,14 +14,14 @@ class CheckUserStatus
     {
         $user = Auth::user();
 
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
         // Check if user is active and phone verified
-        if (!$user->is_active || !$user->phone_verified_at) {
+        if (! $user->is_active || ! $user->phone_verified_at) {
             return response()->json([
-                'message' => 'Account is not active. Please verify your phone number first.'
+                'message' => 'Account is not active. Please verify your phone number first.',
             ], 403);
         }
 

@@ -1,4 +1,5 @@
 <?php
+
 // app/Http/Middleware/CheckRole.php
 
 namespace App\Http\Middleware;
@@ -13,7 +14,7 @@ class CheckRole
     {
         $user = Auth::user();
 
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated'], 401);
         }
 
@@ -25,7 +26,7 @@ class CheckRole
         }
 
         return response()->json([
-            'message' => 'Unauthorized. Required role(s): ' . implode(', ', $roles)
+            'message' => 'Unauthorized. Required role(s): '.implode(', ', $roles),
         ], 403);
     }
 }

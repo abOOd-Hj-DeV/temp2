@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/RedFlagType.php
 
 namespace App\Enums;
@@ -11,7 +12,7 @@ enum RedFlagType: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::LOW_MOOD => 'Low Mood',
             self::NON_COMPLIANCE => 'Non Compliance',
             self::SAFETY => 'Safety Concern',

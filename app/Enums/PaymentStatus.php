@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/PaymentStatus.php
 
 namespace App\Enums;
@@ -11,7 +12,7 @@ enum PaymentStatus: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::PAID => 'Paid',
             self::PENDING => 'Pending',
             self::FREE => 'Free',

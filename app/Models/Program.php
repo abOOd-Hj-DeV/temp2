@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Program.php
 
 namespace App\Models;
@@ -12,10 +13,11 @@ class Program extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'name', 'description', 'is_core'
+        'id', 'name', 'description', 'is_core',
     ];
 
     protected $casts = [

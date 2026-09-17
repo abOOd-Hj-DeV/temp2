@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Payment.php
 
 namespace App\Models;
@@ -12,11 +13,12 @@ class Payment extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
         'id', 'subscription_id', 'amount', 'proof_file_path',
-        'reviewer_id', 'status', 'note'
+        'reviewer_id', 'status', 'note',
     ];
 
     protected $casts = [
@@ -42,7 +44,7 @@ class Payment extends Model
     /**
      * الموافقة على الدفع
      */
-    public function approve(string $note = null, string $reviewerId = null): void
+    public function approve(?string $note = null, ?string $reviewerId = null): void
     {
         $this->update([
             'status' => 'approved',
@@ -54,7 +56,7 @@ class Payment extends Model
     /**
      * رفض الدفع
      */
-    public function reject(string $note = null, string $reviewerId = null): void
+    public function reject(?string $note = null, ?string $reviewerId = null): void
     {
         $this->update([
             'status' => 'rejected',

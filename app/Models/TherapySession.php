@@ -1,5 +1,6 @@
 <?php
-// app/Models/Session.php
+
+// app/Models/TherapySession.php
 
 namespace App\Models;
 
@@ -7,17 +8,18 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class Session extends Model
+class TherapySession extends Model
 {
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
         'id', 'patient_id', 'therapist_id', 'session_date', 'session_time',
         'medium', 'price', 'status', 'link', 'summary', 'is_initial',
-        'payment_status', 'reminder_sent'
+        'payment_status', 'reminder_sent',
     ];
 
     protected $casts = [

@@ -1,9 +1,11 @@
 <?php
+
 // app/Repositories/Contracts/AssessmentRepositoryInterface.php
 
 namespace App\Repositories\Contracts;
 
 use App\Models\Assessment;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
 
 interface AssessmentRepositoryInterface
@@ -36,22 +38,22 @@ interface AssessmentRepositoryInterface
     /**
      * الحصول على آخر تقييم للمريض
      */
-    public function getLatestByPatientId(string $patientId, string $type = null): ?Assessment;
+    public function getLatestByPatientId(string $patientId, ?string $type = null): ?Assessment;
 
     /**
      * الحصول على سجل التقييمات مع التقسيم (pagination)
      */
-    public function getPatientHistory(string $patientId, int $perPage = 10): \Illuminate\Contracts\Pagination\LengthAwarePaginator;
+    public function getPatientHistory(string $patientId, int $perPage = 10): LengthAwarePaginator;
 
     /**
      * الحصول على متوسط تقييمات المريض
      */
-    public function getAverageScore(string $patientId, string $type = null): float;
+    public function getAverageScore(string $patientId, ?string $type = null): float;
 
     /**
      * التحقق إذا كان المريض أجرى تقييم اليوم
      */
-    public function hasAssessmentToday(string $patientId, string $type = null): bool;
+    public function hasAssessmentToday(string $patientId, ?string $type = null): bool;
 
     /**
      * الحصول على التقييمات الحرجة (Red Flags)

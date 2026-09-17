@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/RedFlagPriority.php
 
 namespace App\Enums;
@@ -11,7 +12,7 @@ enum RedFlagPriority: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::HIGH => 'High',
             self::MEDIUM => 'Medium',
             self::LOW => 'Low',
@@ -20,7 +21,7 @@ enum RedFlagPriority: string
 
     public function color(): string
     {
-        return match($this) {
+        return match ($this) {
             self::HIGH => 'danger',
             self::MEDIUM => 'warning',
             self::LOW => 'info',

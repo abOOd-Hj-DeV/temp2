@@ -1,12 +1,13 @@
 <?php
+
 // app/Repositories/Eloquent/AssessmentRepository.php
 
 namespace App\Repositories\Eloquent;
 
 use App\Models\Assessment;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Support\Facades\DB;
 
 class AssessmentRepository implements AssessmentRepositoryInterface
 {
@@ -37,7 +38,7 @@ class AssessmentRepository implements AssessmentRepositoryInterface
         return $assessment->delete();
     }
 
-    public function getLatestByPatientId(string $patientId, string $type = null): ?Assessment
+    public function getLatestByPatientId(string $patientId, ?string $type = null): ?Assessment
     {
         $query = Assessment::where('patient_id', $patientId)
             ->orderBy('completed_at', 'desc');
@@ -49,7 +50,7 @@ class AssessmentRepository implements AssessmentRepositoryInterface
         return $query->first();
     }
 
-    public function getPatientHistory(string $patientId, int $perPage = 10): \Illuminate\Contracts\Pagination\LengthAwarePaginator
+    public function getPatientHistory(string $patientId, int $perPage = 10): LengthAwarePaginator
     {
         return Assessment::where('patient_id', $patientId)
             ->with('patient')
@@ -57,7 +58,7 @@ class AssessmentRepository implements AssessmentRepositoryInterface
             ->paginate($perPage);
     }
 
-    public function getAverageScore(string $patientId, string $type = null): float
+    public function getAverageScore(string $patientId, ?string $type = null): float
     {
         $query = Assessment::where('patient_id', $patientId);
 
@@ -68,7 +69,7 @@ class AssessmentRepository implements AssessmentRepositoryInterface
         return (float) $query->avg('score');
     }
 
-    public function hasAssessmentToday(string $patientId, string $type = null): bool
+    public function hasAssessmentToday(string $patientId, ?string $type = null): bool
     {
         $query = Assessment::where('patient_id', $patientId)
             ->whereDate('completed_at', today());

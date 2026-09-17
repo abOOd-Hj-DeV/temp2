@@ -1,25 +1,27 @@
 <?php
+
 // database/seeders/RolePermissionSeeder.php
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
-use Spatie\Permission\Models\Role;
-use Spatie\Permission\Models\Permission;
 use App\Enums\UserRole;
+use Illuminate\Database\Seeder;
+use Spatie\Permission\Models\Permission;
+use Spatie\Permission\Models\Role;
+use Spatie\Permission\PermissionRegistrar;
 
 class RolePermissionSeeder extends Seeder
 {
     public function run()
     {
         // 1. إعادة تعيين ذاكرة التخزين المؤقت (ضرورية بعد كل عملية Seeding)
-        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+        app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
         // 2. قائمة الصلاحيات
         $permissions = [
             'manage users', 'view reports', 'manage content', 'manage finances',
-            'book appointments', 'view appointments' , 'manage appointments',
-            'review documents', 'assign support'
+            'book appointments', 'view appointments', 'manage appointments',
+            'review documents', 'assign support',
         ];
 
         // 3. إنشاء الصلاحيات وتحديد الحارس 'api'
@@ -38,7 +40,7 @@ class RolePermissionSeeder extends Seeder
             // إنشاء الدور مع تحديد الحارس 'api' بشكل صريح
             $role = Role::firstOrCreate([
                 'name' => $roleName,
-                'guard_name' => 'api' // <--- تعيين حارس API للدور
+                'guard_name' => 'api', // <--- تعيين حارس API للدور
             ]);
 
             // تعيين الصلاحيات حسب الدور

@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/AuditLog.php
 
 namespace App\Models;
@@ -12,10 +13,11 @@ class AuditLog extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'user_id', 'action', 'entity_id', 'details', 'timestamp'
+        'id', 'user_id', 'action', 'entity_id', 'details', 'timestamp',
     ];
 
     protected $casts = [
@@ -37,8 +39,8 @@ class AuditLog extends Model
     public static function logAction(
         string $userId,
         string $action,
-        string $entityId = null,
-        array $details = null
+        ?string $entityId = null,
+        ?array $details = null
     ): self {
         return self::create([
             'user_id' => $userId,

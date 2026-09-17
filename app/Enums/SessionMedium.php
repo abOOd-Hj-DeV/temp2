@@ -1,4 +1,5 @@
 <?php
+
 // app/Enums/SessionMedium.php
 
 namespace App\Enums;
@@ -11,7 +12,7 @@ enum SessionMedium: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::ZOOM => 'Zoom',
             self::MEET => 'Google Meet',
             self::WHATSAPP => 'WhatsApp',

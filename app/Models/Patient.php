@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Patient.php
 
 namespace App\Models;
@@ -13,13 +14,15 @@ class Patient extends Model
     use HasFactory;
 
     protected $primaryKey = 'user_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
         'user_id', 'full_name', 'age', 'gender', 'language',
         'assessment_score', 'safety_flag', 'therapist_id',
-        'subscription_id', 'compliance_level'
+        'subscription_id', 'compliance_level',
     ];
 
     protected $casts = [
@@ -57,7 +60,7 @@ class Patient extends Model
      */
     public function sessions(): HasMany
     {
-        return $this->hasMany(Session::class, 'patient_id', 'user_id');
+        return $this->hasMany(TherapySession::class, 'patient_id', 'user_id');
     }
 
     /**

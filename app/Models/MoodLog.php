@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/MoodLog.php
 
 namespace App\Models;
@@ -12,10 +13,11 @@ class MoodLog extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'patient_id', 'score', 'notes', 'log_date', 'alert_sent'
+        'id', 'patient_id', 'score', 'notes', 'log_date', 'alert_sent',
     ];
 
     protected $casts = [

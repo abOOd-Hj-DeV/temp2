@@ -1,5 +1,7 @@
 <?php
 
+use App\Models\User;
+
 return [
 
     /*
@@ -36,11 +38,11 @@ return [
     */
 
     'guards' => [
-    'api' => [
-        'driver' => 'passport',
-        'provider' => 'users',
+        'api' => [
+            'driver' => 'sanctum',
+            'provider' => 'users',
+        ],
     ],
-],
     /*
     |--------------------------------------------------------------------------
     | User Providers
@@ -61,7 +63,7 @@ return [
     'providers' => [
         'users' => [
             'driver' => 'eloquent',
-            'model' => env('AUTH_MODEL', App\Models\User::class),
+            'model' => env('AUTH_MODEL', User::class),
         ],
 
         // 'users' => [

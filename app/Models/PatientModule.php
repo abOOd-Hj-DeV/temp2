@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/PatientModule.php
 
 namespace App\Models;
@@ -12,10 +13,11 @@ class PatientModule extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'patient_id', 'module_id', 'completed_at', 'status'
+        'id', 'patient_id', 'module_id', 'completed_at', 'status',
     ];
 
     protected $casts = [

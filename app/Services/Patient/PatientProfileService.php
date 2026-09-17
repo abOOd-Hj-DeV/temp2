@@ -1,75 +1,105 @@
 <?php
-// app/Services/Patient/PatientProfileService.php
 
 namespace App\Services\Patient;
 
-use App\Models\User;
 use App\Models\Patient;
+use App\Models\User;
 use App\Repositories\Contracts\PatientRepositoryInterface;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\DB;
 
+/**
+ * Patient profile CRUD and onboarding state.
+ *
+ * Only safe, self-reported fields are writable here; clinical fields
+ * (assessment_score, safety_flag, compliance_level, therapist_id,
+ * subscription_id) are owned by clinical/admin services.
+ */
 class PatientProfileService
 {
+    public const EDITABLE_FIELDS = ['full_name', 'age', 'gender', 'language'];
+
     public function __construct(
-        private PatientRepositoryInterface $patientRepository,
-        private PatientHelperService $helperService
+        private PatientRepositoryInterface $patients,
     ) {}
 
-    public function getPatientProfile(User $user): ?Patient
+    public function getProfile(User $user): ?array
     {
-        return $this->patientRepository->findByUserId($user->id);
+        $patient = $this->patients->findByUserId($user->id);
+
+        return $patient ? $this->toArray($patient) : null;
     }
 
-    public function updatePatientProfile(User $user, array $data): array
+    /**
+     * Create-or-update the patient's profile (idempotent onboarding).
+     */
+    public function upsertProfile(User $user, array $data): array
     {
-        return DB::transaction(function () use ($user, $data) {
-            try {
-                $patient = $this->patientRepository->findByUserId($user->id);
+        $fields = array_intersect_key($data, array_flip(self::EDITABLE_FIELDS));
 
-                if ($patient) {
-                    $this->patientRepository->update($patient, $data);
-                    $action = 'updated';
-                    $message = 'Profile updated successfully';
-                } else {
-                    $patientData = array_merge(['user_id' => $user->id], $data);
-                    $patient = $this->patientRepository->create($patientData);
-                    $action = 'created';
-                    $message = 'Profile created successfully';
-                }
+        $patient = $this->patients->findByUserId($user->id);
 
-                $patientWithDetails = $this->patientRepository->findByUserId($user->id);
-                $completion = $this->helperService->calculateProfileCompletion($patientWithDetails);
-                $safetyCheck = $this->helperService->checkSafetyConcerns($data);
+        if ($patient) {
+            $this->patients->update($patient, $fields);
+        } else {
+            $patient = $this->patients->create($fields + ['user_id' => $user->id]);
+        }
 
-                Log::info('Patient profile ' . $action, [
-                    'user_id' => $user->id,
-                    'patient_id' => $patient->user_id,
-                    'completion_percentage' => $completion,
-                    'safety_flag' => $safetyCheck['has_concern']
-                ]);
+        return [
+            'message' => __('Profile saved.'),
+            'patient' => $this->toArray($patient->refresh()),
+            'profile_completion' => $this->completion($patient),
+        ];
+    }
 
-                return [
-                    'message' => $message,
-                    'patient' => $this->helperService->formatPatientForResponse($patientWithDetails),
-                    'profile_completion' => [
-                        'percentage' => $completion,
-                        'level' => $this->helperService->getCompletionLevel($completion),
-                        'next_steps' => $this->helperService->getNextProfileSteps($patientWithDetails)
-                    ],
-                    'safety_check' => $safetyCheck
-                ];
+    public function getOnboarding(User $user): array
+    {
+        $patient = $this->patients->findByUserId($user->id);
 
-            } catch (\Exception $e) {
-                Log::error('Failed to update patient profile in transaction', [
-                    'user_id' => $user->id,
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString()
-                ]);
+        return [
+            'has_profile' => $patient !== null,
+            'patient' => $patient ? $this->toArray($patient) : null,
+            'profile_completion' => $this->completion($patient),
+            'next_steps' => $this->nextSteps($patient),
+        ];
+    }
 
-                throw $e;
-            }
-        });
+    private function completion(?Patient $patient): int
+    {
+        if (! $patient) {
+            return 0;
+        }
+
+        $filled = collect(self::EDITABLE_FIELDS)
+            ->filter(fn (string $field) => ! empty($patient->{$field}))
+            ->count();
+
+        return (int) round($filled / count(self::EDITABLE_FIELDS) * 100);
+    }
+
+    private function nextSteps(?Patient $patient): array
+    {
+        $steps = [];
+
+        if (! $patient) {
+            $steps[] = 'complete_profile';
+        }
+
+        $steps[] = 'take_assessment';
+        $steps[] = 'choose_therapist';
+
+        return $steps;
+    }
+
+    private function toArray(Patient $patient): array
+    {
+        return [
+            'user_id' => $patient->user_id,
+            'full_name' => $patient->full_name,
+            'age' => $patient->age,
+            'gender' => $patient->gender,
+            'language' => $patient->language,
+            'compliance_level' => $patient->compliance_level,
+            'has_therapist' => $patient->therapist_id !== null,
+            'has_subscription' => $patient->subscription_id !== null,
+        ];
     }
 }
-
