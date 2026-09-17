@@ -152,6 +152,14 @@ class TherapistApiTest extends TestCase
         $this->putJson('/api/v1/therapists/me/settings', [
             'availability' => ['monday' => ['morning']],
         ])->assertStatus(422);
+
+        $this->putJson('/api/v1/therapists/me/settings', [
+            'availability' => ['monday' => ['12:00-09:00']],
+        ])->assertStatus(422);
+
+        $this->putJson('/api/v1/therapists/me/settings', [
+            'availability' => ['monday' => ['09:30-09:45']],
+        ])->assertOk(); // same-hour ascending window is valid
     }
 
     public function test_patient_cannot_use_therapist_self_routes(): void

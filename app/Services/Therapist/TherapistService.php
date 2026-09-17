@@ -131,6 +131,12 @@ class TherapistService
                 if (! is_string($window) || ! preg_match('/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/', $window)) {
                     throw ValidationException::withMessages(['availability' => "Invalid window '{$window}' — expected HH:MM-HH:MM."]);
                 }
+
+                [$start, $end] = explode('-', $window);
+
+                if ($end <= $start) {
+                    throw ValidationException::withMessages(['availability' => "Window '{$window}' ends before it starts."]);
+                }
             }
         }
 

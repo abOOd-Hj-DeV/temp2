@@ -177,6 +177,10 @@ class SessionService
             $this->sessions->update($session, ['status' => $to->value] + $extra);
             $this->logStatus($session, $from, $to, $actor->id);
 
+            if ($to === SessionStatus::CANCELLED && $session->therapist) {
+                $this->syncClientsCount($session->therapist);
+            }
+
             $fresh = $session->fresh(['patient.user', 'therapist.user']);
             $this->notifications->sessionStatusChanged($fresh, $from, $to);
 
