@@ -1,23 +1,22 @@
 <?php
 
-// app/Models/TherapySession.php
-
 namespace App\Models;
 
+use App\Enums\PaymentStatus;
+use App\Enums\SessionMedium;
+use App\Enums\SessionStatus;
+use App\Traits\HasUUID;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class TherapySession extends Model
 {
-    use HasFactory;
-
-    protected $keyType = 'string';
-
-    public $incrementing = false;
+    use HasFactory, HasUUID;
 
     protected $fillable = [
-        'id', 'patient_id', 'therapist_id', 'session_date', 'session_time',
+        'patient_id', 'therapist_id', 'session_date', 'session_time',
         'medium', 'price', 'status', 'link', 'summary', 'is_initial',
         'payment_status', 'reminder_sent',
     ];
@@ -27,32 +26,28 @@ class TherapySession extends Model
         'price' => 'decimal:2',
         'is_initial' => 'boolean',
         'reminder_sent' => 'boolean',
+        'status' => SessionStatus::class,
+        'medium' => SessionMedium::class,
+        'payment_status' => PaymentStatus::class,
     ];
 
-    /**
-     * العلاقة مع المريض
-     */
     public function patient(): BelongsTo
     {
         return $this->belongsTo(Patient::class, 'patient_id', 'user_id');
     }
 
-    /**
-     * العلاقة مع المعالج
-     */
     public function therapist(): BelongsTo
     {
         return $this->belongsTo(Therapist::class, 'therapist_id', 'user_id');
     }
 
-    /**
-     * التحقق إذا كانت الجلسة مجانية (أولية + اشتراك نشط)
-     */
-    public function getIsFreeAttribute(): bool
+    public function statusLogs(): HasMany
     {
-        return $this->is_initial && $this->patient->subscriptions()
-            ->where('verification_status', 'approved')
-            ->where('end_date', '>=', now())
-            ->exists();
+        return $this->hasMany(SessionStatusLog::class, 'session_id');
+    }
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class, 'therapy_session_id');
     }
 }
