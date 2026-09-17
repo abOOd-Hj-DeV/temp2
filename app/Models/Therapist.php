@@ -4,6 +4,7 @@
 
 namespace App\Models;
 
+use App\Enums\ApprovalStatus;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -31,6 +32,7 @@ class Therapist extends Model
         'rating' => 'float',
         'clients_count' => 'integer',
         'clients_limit' => 'integer',
+        'approval_status' => ApprovalStatus::class,
     ];
 
     /**
@@ -63,6 +65,6 @@ class Therapist extends Model
     public function getCanAcceptNewClientsAttribute(): bool
     {
         return $this->clients_count < $this->clients_limit
-            && $this->approval_status === 'approved';
+            && $this->approval_status === ApprovalStatus::APPROVED;
     }
 }
