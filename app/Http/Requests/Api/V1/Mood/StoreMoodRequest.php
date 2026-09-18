@@ -14,7 +14,11 @@ class StoreMoodRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'score' => ['required', 'integer', 'min:1', 'max:10'],
+            'score' => ['required', 'integer', 'min:1', 'max:10', function (string $attribute, mixed $value, \Closure $fail) {
+                if (! is_int($value)) {
+                    $fail("The {$attribute} must be a JSON integer, not a string.");
+                }
+            }],
             'notes' => ['nullable', 'string', 'max:1000'],
             'log_date' => ['nullable', 'date_format:Y-m-d', 'before_or_equal:today', 'after_or_equal:'.now()->subDays(7)->toDateString()],
         ];

@@ -21,7 +21,7 @@ class AccountAnonymizer
     public function anonymize(User $user): void
     {
         DB::transaction(function () use ($user) {
-            $user->tokens()->delete();
+            $user->revokeAllTokens();
 
             $user->forceFill([
                 'name' => 'Deleted user',

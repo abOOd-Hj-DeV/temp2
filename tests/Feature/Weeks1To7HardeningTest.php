@@ -2,18 +2,23 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\EscalateStaleRedFlagsJob;
 use App\Jobs\PruneScheduledDeletionsJob;
 use App\Jobs\SendSessionRemindersJob;
 use App\Models\Patient;
 use App\Models\Payment;
+use App\Models\RedFlag;
 use App\Models\Subscription;
 use App\Models\Therapist;
+use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Services\Messaging\WhatsAppSenderInterface;
+use App\Services\NotificationService;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
@@ -130,10 +135,15 @@ class Weeks1To7HardeningTest extends TestCase
             'password' => 'Secret123!', 'password_confirmation' => 'Secret123!', 'role' => 'patient',
         ])->assertStatus(422);
 
-        // Cooldown applies to the canonical number regardless of formatting.
-        $this->postJson('/api/v1/auth/otp/send', ['whatsapp_number' => '963911111111'])->assertStatus(422);
+        // Cooldown applies to the canonical number regardless of formatting; the
+        // response is identical either way, only the delivery count differs.
+        $sender = $this->app->make(WhatsAppSenderInterface::class);
+        $sent = count($sender->messages);
+        $this->postJson('/api/v1/auth/otp/send', ['whatsapp_number' => '963911111111'])->assertOk();
+        $this->assertCount($sent, $sender->messages);
         $this->travel(61)->seconds();
         $this->postJson('/api/v1/auth/otp/send', ['whatsapp_number' => '963911111111'])->assertOk();
+        $this->assertCount($sent + 1, $sender->messages);
     }
 
     public function test_status_endpoint_does_not_enumerate_accounts(): void
@@ -214,6 +224,26 @@ class Weeks1To7HardeningTest extends TestCase
         $chart = $this->getJson('/api/v1/patients/mood/chart?days=7')->assertOk()->json();
         $this->assertCount(7, $chart['series']);
         $this->assertSame($streak, $chart['summary']['current_low_streak']);
+    }
+
+    public function test_low_mood_streak_requires_consecutive_calendar_days_and_strict_integers(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+
+        // Numeric strings are not accepted (F-12).
+        $this->postJson('/api/v1/mood', ['score' => '2'])->assertStatus(422);
+
+        // Low scores on non-adjacent days (today, -2, -4): no streak, no flag (F-04).
+        foreach ([0, 2, 4] as $ago) {
+            $this->postJson('/api/v1/mood', ['score' => 2, 'log_date' => now()->subDays($ago)->toDateString()])->assertCreated();
+        }
+
+        $this->assertDatabaseMissing('red_flags', ['patient_id' => $this->patient->user_id, 'type' => 'low_mood']);
+        $this->assertSame(1, $this->getJson('/api/v1/patients/mood/chart?days=7')->json('summary.current_low_streak'));
+
+        // Filling the gap makes today, -1, -2 consecutive -> flag raised.
+        $this->postJson('/api/v1/mood', ['score' => 1, 'log_date' => now()->subDay()->toDateString()])->assertCreated();
+        $this->assertDatabaseHas('red_flags', ['patient_id' => $this->patient->user_id, 'type' => 'low_mood']);
     }
 
     // ---------------------------------------------------------- therapists
@@ -344,7 +374,8 @@ class Weeks1To7HardeningTest extends TestCase
             'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(),
             'price' => 150, 'verification_status' => 'approved',
         ]);
-        $this->bookAs($this->patientUser)->assertCreated();
+        // Far enough away not to trip the 48-hour switch lock.
+        $this->bookAs($this->patientUser, ['session_date' => now()->addDays(3)->toDateString()])->assertCreated();
 
         $targetUser = $this->makeUser('therapist', '+963900000170');
         $target = $this->makeTherapist($targetUser, 'approved');
@@ -365,6 +396,53 @@ class Weeks1To7HardeningTest extends TestCase
         Sanctum::actingAs($this->admin, ['*'], 'api');
         $this->postJson("/api/v1/admin/therapist-switches/{$switchId}/review", ['action' => 'approve'])->assertOk();
         $this->assertSame($target->user_id, $this->patient->refresh()->therapist_id);
+    }
+
+    public function test_therapist_switch_is_locked_while_a_session_is_within_48_hours(): void
+    {
+        Subscription::create([
+            'patient_id' => $this->patient->user_id, 'type' => '4_weeks',
+            'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(),
+            'price' => 150, 'verification_status' => 'approved',
+        ]);
+        $this->bookAs($this->patientUser)->assertCreated(); // tomorrow 10:00 => inside the window
+        $session = TherapySession::firstOrFail();
+
+        $targetUser = $this->makeUser('therapist', '+963900000171');
+        $target = $this->makeTherapist($targetUser, 'approved');
+        $payload = ['new_therapist_id' => $target->user_id, 'reason' => 'I would prefer a different approach.'];
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->postJson('/api/v1/therapist/switch', $payload)
+            ->assertUnprocessable()->assertJsonValidationErrorFor('therapist');
+        $this->assertSame(0, TherapistSwitch::count());
+
+        // A completed or cancelled session no longer locks the switch.
+        $session->update(['status' => 'completed']);
+        $this->postJson('/api/v1/therapist/switch', $payload)->assertStatus(202);
+    }
+
+    public function test_therapist_switch_lock_boundary_is_exactly_48_hours(): void
+    {
+        Subscription::create([
+            'patient_id' => $this->patient->user_id, 'type' => '4_weeks',
+            'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(),
+            'price' => 150, 'verification_status' => 'approved',
+        ]);
+        $this->travelTo(now()->setTime(9, 0));
+        $this->bookAs($this->patientUser, ['session_date' => now()->addDays(2)->toDateString(), 'session_time' => '10:00'])
+            ->assertCreated(); // starts in 49h
+
+        $targetUser = $this->makeUser('therapist', '+963900000172');
+        $target = $this->makeTherapist($targetUser, 'approved');
+        $payload = ['new_therapist_id' => $target->user_id, 'reason' => 'I would prefer a different approach.'];
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->postJson('/api/v1/therapist/switch', $payload)->assertStatus(202);
+        TherapistSwitch::query()->delete();
+
+        $this->travel(2)->hours(); // now starts in 47h
+        $this->postJson('/api/v1/therapist/switch', $payload)->assertUnprocessable();
     }
 
     // ------------------------------------------------------------ payments
@@ -477,10 +555,64 @@ class Weeks1To7HardeningTest extends TestCase
         $id = $list['data'][0]['id'];
 
         $this->postJson("/api/v1/admin/red-flags/{$id}/assign", ['user_id' => $this->patientUser->id])->assertStatus(422);
-        $this->postJson("/api/v1/admin/red-flags/{$id}/assign", ['user_id' => $this->therapistUser->id])->assertOk();
+
+        // Approved therapist with no relationship to the patient: rejected (F-03).
+        $this->postJson("/api/v1/admin/red-flags/{$id}/assign", ['user_id' => $this->therapistUser->id])->assertStatus(422);
+
+        // Pending therapist, even if treating the patient: rejected.
+        $pendingUser = $this->makeUser('therapist', '+963900000190');
+        $this->makeTherapist($pendingUser, 'pending');
+        $this->patient->update(['therapist_id' => $pendingUser->id]);
+        $this->postJson("/api/v1/admin/red-flags/{$id}/assign", ['user_id' => $pendingUser->id])->assertStatus(422);
+
+        // Approved therapist who treats the patient: accepted.
+        $this->patient->update(['therapist_id' => $this->therapistUser->id]);
+        $this->postJson("/api/v1/admin/red-flags/{$id}/assign", ['user_id' => $this->therapistUser->id])->assertOk()
+            ->assertJsonPath('data.assigned_to', $this->therapistUser->id);
+        $this->assertDatabaseHas('notifications', ['notifiable_id' => $this->therapistUser->id]);
+
+        // Clinical supervisor can be assigned and can work the flag itself (F-02).
+        $supervisor = $this->makeUser('clinical_supervisor', '+963900000191');
+        $this->postJson("/api/v1/admin/red-flags/{$id}/assign", ['user_id' => $supervisor->id])->assertOk();
+
+        Sanctum::actingAs($supervisor, ['*'], 'api');
+        $this->getJson('/api/v1/admin/red-flags')->assertOk();
+        $this->getJson("/api/v1/admin/red-flags/{$id}")->assertOk();
+        $this->getJson('/api/v1/admin/payments')->assertForbidden();
         $this->postJson("/api/v1/admin/red-flags/{$id}/status", ['status' => 'resolved'])->assertStatus(422);
         $this->postJson("/api/v1/admin/red-flags/{$id}/status", ['status' => 'resolved', 'action_taken' => 'Called patient.'])->assertOk();
         $this->assertSame(0, $this->getJson('/api/v1/admin/red-flags')->json('stats.open'));
+    }
+
+    public function test_stale_high_priority_red_flags_are_escalated_to_all_clinical_staff_once(): void
+    {
+        $supervisor = $this->makeUser('clinical_supervisor', '+963900000192');
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $answers = array_fill_keys(array_map(fn ($i) => "q{$i}", range(1, 9)), 0);
+        $answers['q9'] = 3;
+        $this->postJson('/api/v1/patients/assessment', ['type' => 'phq9', 'answers' => $answers])->assertCreated();
+
+        $flag = RedFlag::sole();
+        $this->assertSame('high', $flag->priority->value);
+
+        // Not yet stale: nothing happens.
+        (new EscalateStaleRedFlagsJob)->handle(app(NotificationService::class));
+        $this->assertNull($flag->fresh()->escalated_at);
+
+        RedFlag::whereKey($flag->id)->update(['created_at' => now()->subMinutes(config('sakina.red_flag_escalation_minutes') + 1)]);
+
+        $before = DB::table('notifications')->count();
+        (new EscalateStaleRedFlagsJob)->handle(app(NotificationService::class));
+        $this->assertNotNull($flag->fresh()->escalated_at);
+        // supervisor + admin each get one escalation notification
+        $this->assertSame($before + 2, DB::table('notifications')->count());
+        $this->assertDatabaseHas('notifications', ['notifiable_id' => $supervisor->id]);
+        $this->assertDatabaseHas('notifications', ['notifiable_id' => $this->admin->id]);
+
+        // Idempotent: second run sends nothing more.
+        (new EscalateStaleRedFlagsJob)->handle(app(NotificationService::class));
+        $this->assertSame($before + 2, DB::table('notifications')->count());
     }
 
     public function test_notifications_endpoints(): void

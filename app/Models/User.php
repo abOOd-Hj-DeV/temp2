@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use Spatie\Permission\Models\Role;
 use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
@@ -37,6 +38,41 @@ class User extends Authenticatable
         'is_active' => 'boolean',
         'role' => UserRole::class,
     ];
+
+    /**
+     * `users.role` is the single source of truth; the Spatie role used by the
+     * `role:` middleware is derived from it so the two can never diverge.
+     */
+    protected static function booted(): void
+    {
+        static::saved(function (User $user): void {
+            if ($user->role instanceof UserRole && ($user->wasRecentlyCreated || $user->wasChanged('role'))) {
+                $user->syncSpatieRole();
+            }
+        });
+    }
+
+    public function syncSpatieRole(): void
+    {
+        if (! $this->role instanceof UserRole) {
+            return;
+        }
+
+        Role::findOrCreate($this->role->value, $this->guard_name);
+        $this->syncRoles([$this->role->value]);
+    }
+
+    public function refreshTokens(): HasMany
+    {
+        return $this->hasMany(RefreshToken::class, 'user_id');
+    }
+
+    /** Revoke every access and refresh token (logout everywhere / compromise). */
+    public function revokeAllTokens(): void
+    {
+        $this->refreshTokens()->whereNull('revoked_at')->update(['revoked_at' => now()]);
+        $this->tokens()->delete();
+    }
 
     public function patient(): HasOne
     {

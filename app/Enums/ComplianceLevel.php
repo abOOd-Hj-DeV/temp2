@@ -28,6 +28,19 @@ enum ComplianceLevel: string
         };
     }
 
+    public static function fromScore(int $score): self
+    {
+        foreach (self::cases() as $level) {
+            [$min, $max] = $level->scoreRange();
+
+            if ($score >= $min && $score <= $max) {
+                return $level;
+            }
+        }
+
+        return self::LOW;
+    }
+
     public static function values(): array
     {
         return array_column(self::cases(), 'value');

@@ -3,6 +3,7 @@
 namespace App\Services\Auth;
 
 use App\Enums\UserRole;
+use App\Models\RefreshToken;
 use App\Models\User;
 use App\Repositories\Contracts\UserRepositoryInterface;
 use App\Services\AuditLogService;
@@ -10,7 +11,9 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Laravel\Sanctum\PersonalAccessToken;
 
 /**
  * Registration, WhatsApp-OTP verification, login, and password reset.
@@ -23,8 +26,6 @@ class AuthService
     private const UNVERIFIED_USER_TTL_HOURS = 24;
 
     private const TOKEN_NAME = 'api';
-
-    private const TOKEN_TTL_DAYS = 15;
 
     private const MAX_LOGIN_ATTEMPTS = 5;
 
@@ -93,19 +94,9 @@ class AuthService
     {
         $user = $this->users->findByWhatsapp($whatsappNumber);
 
-        if (! $user) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => __('This WhatsApp number is not registered.'),
-            ]);
-        }
-
-        if ($user->isVerified()) {
-            throw ValidationException::withMessages([
-                'otp' => __('Account is already verified. Please log in.'),
-            ]);
-        }
-
-        if (! $this->otp->verify($user, $code, OtpService::PURPOSE_REGISTRATION)) {
+        // One indistinguishable failure for unknown, already-verified and wrong-code
+        // cases so the endpoint cannot be used to enumerate accounts.
+        if (! $user || $user->isVerified() || ! $this->otp->verify($user, $code, OtpService::PURPOSE_REGISTRATION)) {
             throw ValidationException::withMessages([
                 'otp' => __('Invalid or expired verification code.'),
             ]);
@@ -129,28 +120,16 @@ class AuthService
     {
         $user = $this->users->findByWhatsapp($whatsappNumber);
 
-        if (! $user) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => __('This WhatsApp number is not registered.'),
-            ]);
+        if ($user && ! $user->isVerified()) {
+            if ($this->isUnverifiedExpired($user)) {
+                $this->users->delete($user);
+            } else {
+                $this->sendOtpQuietly($user, OtpService::PURPOSE_REGISTRATION);
+            }
         }
 
-        if ($user->isVerified()) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => __('Account is already verified. Please log in.'),
-            ]);
-        }
-
-        if ($this->isUnverifiedExpired($user)) {
-            $this->users->delete($user);
-            throw ValidationException::withMessages([
-                'whatsapp_number' => __('Verification period expired. Please register again.'),
-            ]);
-        }
-
-        $this->otp->send($user, OtpService::PURPOSE_REGISTRATION);
-
-        return ['message' => __('A new verification code was sent.')];
+        // Same response whether the number is unknown, verified, expired or on cooldown.
+        return ['message' => __('If this number is pending verification, a new code has been sent.')];
     }
 
     public function login(array $data): array
@@ -192,9 +171,89 @@ class AuthService
 
     public function logout(User $user): array
     {
-        $user->currentAccessToken()?->delete();
+        $token = $user->currentAccessToken();
+
+        if ($token instanceof PersonalAccessToken) {
+            RefreshToken::where('access_token_id', $token->getKey())
+                ->whereNull('revoked_at')
+                ->update(['revoked_at' => now()]);
+            $token->delete();
+        }
 
         return ['message' => __('Logged out successfully.')];
+    }
+
+    public function logoutAll(User $user): array
+    {
+        $user->revokeAllTokens();
+        $this->audit->record($user, AuditLogService::LOGOUT_ALL, $user->id);
+
+        return ['message' => __('Logged out from all devices.')];
+    }
+
+    /**
+     * Rotate a refresh token: the presented token is single-use; a replay of
+     * an already-used or revoked token means it leaked, so the whole session
+     * family (every access + refresh token of the user) is revoked.
+     */
+    public function refresh(string $plainRefreshToken): array
+    {
+        $hash = hash('sha256', $plainRefreshToken);
+
+        $stored = RefreshToken::where('token_hash', $hash)->first();
+
+        if (! $stored) {
+            $this->invalidRefresh();
+        }
+
+        $user = $stored->user;
+
+        if ($stored->revoked_at !== null) {
+            $this->invalidRefresh();
+        }
+
+        if ($stored->used_at !== null) {
+            Log::warning('Refresh token replay detected; revoking all sessions', [
+                'user_id' => $stored->user_id,
+                'family_id' => $stored->family_id,
+            ]);
+
+            if ($user) {
+                $user->revokeAllTokens();
+                $this->audit->record($user, AuditLogService::REFRESH_TOKEN_REPLAYED, $user->id, [
+                    'family_id' => $stored->family_id,
+                ]);
+            }
+
+            $this->invalidRefresh();
+        }
+
+        if ($stored->expires_at->isPast() || ! $user || ! $user->is_active || ! $user->phone_verified_at) {
+            $stored->update(['revoked_at' => now()]);
+            $this->invalidRefresh();
+        }
+
+        // Single-use: the atomic claim guarantees two concurrent refreshes with
+        // the same token cannot both succeed.
+        $claimed = RefreshToken::whereKey($stored->id)
+            ->whereNull('used_at')
+            ->whereNull('revoked_at')
+            ->update(['used_at' => now()]);
+
+        if ($claimed === 0) {
+            $this->invalidRefresh();
+        }
+
+        PersonalAccessToken::whereKey($stored->access_token_id)->delete();
+
+        return $this->issueToken($user, $stored->family_id);
+    }
+
+    private function invalidRefresh(): never
+    {
+        throw ValidationException::withMessages([
+            'refresh_token' => __('Invalid or expired refresh token.'),
+        ]);
     }
 
     public function currentUser(User $user): array
@@ -222,7 +281,7 @@ class AuthService
 
         // Do not reveal whether the number is registered.
         if ($user?->isVerified()) {
-            $this->otp->send($user, OtpService::PURPOSE_PASSWORD_RESET);
+            $this->sendOtpQuietly($user, OtpService::PURPOSE_PASSWORD_RESET);
         }
 
         return [
@@ -243,7 +302,7 @@ class AuthService
         $this->users->update($user, ['password' => Hash::make($newPassword)]);
 
         // Revoke all existing tokens so the new password is required everywhere.
-        $user->tokens()->delete();
+        $user->revokeAllTokens();
 
         $this->audit->record($user, AuditLogService::PASSWORD_RESET, $user->id);
         Log::info('Password reset completed', ['user_id' => $user->id]);
@@ -251,15 +310,41 @@ class AuthService
         return ['message' => __('Password updated successfully.')];
     }
 
-    private function issueToken(User $user): array
+    /**
+     * Send an OTP without surfacing cooldown/provider errors to the caller;
+     * those responses would confirm the account exists.
+     */
+    private function sendOtpQuietly(User $user, string $purpose): void
     {
-        $expiresAt = now()->addDays(self::TOKEN_TTL_DAYS);
+        try {
+            $this->otp->send($user, $purpose);
+        } catch (ValidationException $e) {
+            Log::info('OTP not sent', ['user_id' => $user->id, 'purpose' => $purpose, 'reason' => $e->getMessage()]);
+        }
+    }
+
+    private function issueToken(User $user, ?string $familyId = null): array
+    {
+        $expiresAt = now()->addMinutes((int) config('sakina.access_token_ttl_minutes', 120));
         $token = $user->createToken(self::TOKEN_NAME, ['*'], $expiresAt);
+
+        $refreshExpiresAt = now()->addDays((int) config('sakina.refresh_token_ttl_days', 30));
+        $plainRefresh = Str::random(64);
+
+        RefreshToken::create([
+            'user_id' => $user->id,
+            'family_id' => $familyId ?? (string) Str::uuid(),
+            'token_hash' => hash('sha256', $plainRefresh),
+            'access_token_id' => $token->accessToken->getKey(),
+            'expires_at' => $refreshExpiresAt,
+        ]);
 
         return [
             'access_token' => $token->plainTextToken,
             'token_type' => 'Bearer',
             'expires_at' => $expiresAt->toISOString(),
+            'refresh_token' => $plainRefresh,
+            'refresh_expires_at' => $refreshExpiresAt->toISOString(),
         ];
     }
 

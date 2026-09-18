@@ -2,12 +2,15 @@
 
 namespace App\Services;
 
+use App\Enums\ApprovalStatus;
 use App\Enums\RedFlagPriority;
 use App\Enums\RedFlagType;
+use App\Enums\SessionStatus;
 use App\Enums\UserRole;
 use App\Models\Assessment;
 use App\Models\Patient;
 use App\Models\RedFlag;
+use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\RedFlagRepositoryInterface;
 use Illuminate\Support\Facades\Log;
@@ -18,6 +21,12 @@ use Illuminate\Support\Facades\Log;
  */
 class RedFlagService
 {
+    public const CLINICAL_STAFF_ROLES = [
+        UserRole::CLINICAL_SUPERVISOR,
+        UserRole::SUPER_ADMIN,
+        UserRole::ADMIN,
+    ];
+
     public function __construct(
         private RedFlagRepositoryInterface $redFlags,
         private NotificationService $notifications,
@@ -127,6 +136,61 @@ class RedFlagService
         return $this->redFlags->assignTo($redFlagId, $userId);
     }
 
+    /**
+     * Resolve a user who may own the given flag: clinical staff, or an approved
+     * therapist who actually treats the patient. Returns null otherwise.
+     */
+    public function resolveAssignee(RedFlag $flag, string $userId): ?User
+    {
+        $user = User::whereKey($userId)->where('is_active', true)->first();
+
+        if (! $user) {
+            return null;
+        }
+
+        if (in_array($user->role, self::CLINICAL_STAFF_ROLES, true)) {
+            return $user;
+        }
+
+        if ($user->role !== UserRole::THERAPIST) {
+            return null;
+        }
+
+        $therapist = $user->therapist;
+
+        if (! $therapist || $therapist->approval_status !== ApprovalStatus::APPROVED) {
+            return null;
+        }
+
+        $treatsPatient = Patient::whereKey($flag->patient_id)->where('therapist_id', $user->id)->exists()
+            || TherapySession::where('patient_id', $flag->patient_id)
+                ->where('therapist_id', $user->id)
+                ->where('status', '!=', SessionStatus::CANCELLED->value)
+                ->exists();
+
+        return $treatsPatient ? $user : null;
+    }
+
+    /**
+     * Reassign a flag and alert the new owner.
+     */
+    public function reassign(RedFlag $flag, User $assignee): RedFlag
+    {
+        $this->redFlags->assignTo($flag->id, $assignee->id);
+        $flag->refresh();
+
+        try {
+            $this->notifications->redFlagRaised($flag);
+        } catch (\Throwable $e) {
+            Log::error('Red flag reassignment notification failed', [
+                'red_flag_id' => $flag->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return $flag;
+    }
+
     public function getStats(array $filters = []): array
     {
         return $this->redFlags->getStats($filters);
@@ -138,7 +202,7 @@ class RedFlagService
      */
     private function defaultAssignee(): ?User
     {
-        foreach ([UserRole::CLINICAL_SUPERVISOR, UserRole::SUPER_ADMIN, UserRole::ADMIN] as $role) {
+        foreach (self::CLINICAL_STAFF_ROLES as $role) {
             $assignee = User::where('role', $role->value)->where('is_active', true)->first();
             if ($assignee) {
                 return $assignee;

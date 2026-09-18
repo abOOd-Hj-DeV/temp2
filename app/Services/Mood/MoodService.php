@@ -126,7 +126,10 @@ class MoodService
         return true;
     }
 
-    /** Consecutive most-recent entries at or below the threshold. */
+    /**
+     * Length of the run of low scores on strictly consecutive calendar days
+     * ending at the most recent entry. A missed day breaks the run.
+     */
     private function lowStreak(Patient $patient): int
     {
         $threshold = (int) config('sakina.mood_alert_threshold', 3);
@@ -136,11 +139,17 @@ class MoodService
             ->get();
 
         $streak = 0;
+        $expected = null;
+
         foreach ($recent as $entry) {
-            if ($entry->score > $threshold) {
+            $date = Carbon::parse($entry->log_date)->startOfDay();
+
+            if ($entry->score > $threshold || ($expected !== null && ! $date->equalTo($expected))) {
                 break;
             }
+
             $streak++;
+            $expected = $date->copy()->subDay();
         }
 
         return $streak;

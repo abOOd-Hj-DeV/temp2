@@ -131,6 +131,45 @@ class PatientApiTest extends TestCase
 
         $this->assertSame('p1@example.com', $data['user']['email']);
         $this->assertSame('Patient One', $data['patient_profile']['full_name']);
+
+        $response->assertHeader('X-Content-Type-Options', 'nosniff')
+            ->assertHeader('X-Frame-Options', 'DENY')
+            ->assertHeader('Cache-Control', 'no-store, private')
+            ->assertHeader('X-RateLimit-Limit', (string) config('sakina.export_rate_limit_per_hour'));
+
+        // Export is capped per hour; the generic api limiter reports separately.
+        for ($i = 1; $i < (int) config('sakina.export_rate_limit_per_hour'); $i++) {
+            $this->get('/api/v1/patients/export-data')->assertOk();
+        }
+        $this->get('/api/v1/patients/export-data')->assertStatus(429);
+    }
+
+    public function test_api_responses_carry_security_headers_and_global_rate_limit(): void
+    {
+        $this->createProfile();
+
+        $this->getJson('/api/v1/patients/profile')->assertOk()
+            ->assertHeader('X-Content-Type-Options', 'nosniff')
+            ->assertHeader('X-Frame-Options', 'DENY')
+            ->assertHeader('Referrer-Policy', 'no-referrer')
+            ->assertHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'")
+            ->assertHeader('Cache-Control', 'no-store, private')
+            ->assertHeader('X-RateLimit-Limit', (string) config('sakina.api_rate_limit_per_minute'));
+
+        config(['sakina.api_rate_limit_per_minute' => 2]);
+        $this->getJson('/api/v1/patients/profile')->assertOk();
+        $this->getJson('/api/v1/patients/profile')->assertStatus(429)
+            ->assertHeader('X-Content-Type-Options', 'nosniff');
+    }
+
+    public function test_unmatched_api_routes_still_carry_security_headers(): void
+    {
+        $this->getJson('/api/v1/does-not-exist')->assertNotFound()
+            ->assertHeader('X-Content-Type-Options', 'nosniff')
+            ->assertHeader('X-Frame-Options', 'DENY')
+            ->assertHeader('Referrer-Policy', 'no-referrer')
+            ->assertHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'")
+            ->assertHeader('Cache-Control', 'no-store, private');
     }
 
     public function test_account_deletion_schedules_and_revokes_tokens(): void

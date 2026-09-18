@@ -18,7 +18,7 @@ class TherapySession extends Model
     protected $fillable = [
         'patient_id', 'therapist_id', 'session_date', 'session_time',
         'medium', 'price', 'status', 'link', 'summary', 'is_initial',
-        'payment_status', 'reminder_sent', 'reminder_1h_sent',
+        'payment_status', 'reminder_sent', 'reminder_1h_sent', 'reminder_attempts', 'reminder_1h_attempts',
     ];
 
     protected $casts = [

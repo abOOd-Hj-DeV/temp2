@@ -41,6 +41,10 @@ class AuditLogService
 
     public const PASSWORD_RESET = 'auth.password_reset';
 
+    public const LOGOUT_ALL = 'auth.logout_all';
+
+    public const REFRESH_TOKEN_REPLAYED = 'auth.refresh_token_replayed';
+
     public const ACCOUNT_DELETION_REQUESTED = 'account.deletion_requested';
 
     public const ACCOUNT_DELETION_CANCELLED = 'account.deletion_cancelled';

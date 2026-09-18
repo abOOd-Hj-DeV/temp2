@@ -5,8 +5,12 @@ use App\Http\Middleware\CheckUserStatus;
 use App\Http\Middleware\EnsureTherapistApproved;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\LimitJsonBodySize;
+use App\Http\Middleware\SecurityHeaders;
 use App\Jobs\CleanupUnverifiedUsersJob;
+use App\Jobs\ComputeWeeklyComplianceJob;
+use App\Jobs\EscalateStaleRedFlagsJob;
 use App\Jobs\PruneScheduledDeletionsJob;
+use App\Jobs\RemindStalePaymentReviewsJob;
 use App\Jobs\SendSessionRemindersJob;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
@@ -23,7 +27,11 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         // API-only backend: every api/* request negotiates JSON so auth
         // failures return 401 JSON instead of a redirect to a web login.
+        // Global so unmatched routes (404) and other pre-routing responses carry the headers too.
+        $middleware->prepend(SecurityHeaders::class);
         $middleware->api(prepend: [ForceJsonResponse::class, LimitJsonBodySize::class]);
+        // Global per-user/IP ceiling on every api/* route (limiter defined in AppServiceProvider).
+        $middleware->throttleApi();
         $middleware->alias([
             'role' => CheckRole::class,
             'status' => CheckUserStatus::class,
@@ -37,6 +45,12 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->job(new PruneScheduledDeletionsJob)->daily();
 
         $schedule->job(new SendSessionRemindersJob)->everyFiveMinutes();
+        // Broadcast unhandled safety flags to all clinical staff.
+        $schedule->job(new EscalateStaleRedFlagsJob)->everyFifteenMinutes();
+
+        $schedule->job(new RemindStalePaymentReviewsJob)->hourly();
+        // Weekly engagement snapshot (mood check-ins + module completion).
+        $schedule->job(new ComputeWeeklyComplianceJob)->weeklyOn(1, '03:00');
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

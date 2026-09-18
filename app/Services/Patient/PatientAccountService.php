@@ -38,7 +38,7 @@ class PatientAccountService
             $this->users->update($user, ['deletion_scheduled_at' => $scheduledAt]);
 
             // Deactivate every live session token immediately.
-            $user->tokens()->delete();
+            $user->revokeAllTokens();
         });
 
         $this->audit->record($user, AuditLogService::ACCOUNT_DELETION_REQUESTED, $user->id, [

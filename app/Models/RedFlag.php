@@ -21,12 +21,13 @@ class RedFlag extends Model
 
     protected $fillable = [
         'id', 'patient_id', 'assessment_id', 'type', 'description',
-        'assigned_to', 'status', 'action_taken', 'priority',
+        'assigned_to', 'status', 'action_taken', 'priority', 'escalated_at',
     ];
 
     protected $casts = [
         'type' => RedFlagType::class,
         'priority' => RedFlagPriority::class,
+        'escalated_at' => 'datetime',
     ];
 
     /**

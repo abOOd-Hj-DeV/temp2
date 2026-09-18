@@ -4,6 +4,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Enums\UserRole;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -18,11 +19,12 @@ class CheckRole
             return response()->json(['message' => 'Unauthenticated'], 401);
         }
 
-        // Check if user has any of the required roles
-        foreach ($roles as $role) {
-            if ($user->hasRole($role)) {
-                return $next($request);
-            }
+        // users.role is the source of truth; Spatie assignments are derived
+        // from it and must never grant access on their own.
+        $actual = $user->role instanceof UserRole ? $user->role->value : (string) $user->role;
+
+        if (in_array($actual, $roles, true)) {
+            return $next($request);
         }
 
         return response()->json([

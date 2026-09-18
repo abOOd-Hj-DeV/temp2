@@ -14,13 +14,14 @@ class Payment extends Model
 
     protected $fillable = [
         'subscription_id', 'therapy_session_id', 'amount',
-        'proof_file_path', 'reviewer_id', 'status', 'note', 'reviewed_at',
+        'proof_file_path', 'reviewer_id', 'status', 'note', 'reviewed_at', 'review_reminder_sent_at',
     ];
 
     protected $casts = [
         'amount' => 'decimal:2',
         'status' => PaymentReviewStatus::class,
         'reviewed_at' => 'datetime',
+        'review_reminder_sent_at' => 'datetime',
     ];
 
     public function subscription(): BelongsTo
