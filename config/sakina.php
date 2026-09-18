@@ -24,4 +24,28 @@ return [
     // 's3' in production, 'local' for development.
     'uploads_disk' => env('UPLOADS_DISK', 'local'),
 
+    // Hours before the scheduled start after which a patient can no longer cancel.
+    'cancellation_notice_hours' => env('SAKINA_CANCELLATION_NOTICE_HOURS', 12),
+
+    // Hosts a therapist may use for the meeting link, keyed by session medium.
+    'meeting_link_hosts' => [
+        'zoom' => ['zoom.us'],
+        'meet' => ['meet.google.com'],
+        'whatsapp' => ['wa.me', 'chat.whatsapp.com', 'whatsapp.com'],
+    ],
+
+    // Platform share of each paid session; the remainder accrues to the therapist wallet.
+    'currency' => env('SAKINA_CURRENCY', 'USD'),
+
+    'platform_commission_rate' => env('SAKINA_PLATFORM_COMMISSION_RATE', 0.20),
+
+    // Minimum wallet balance a therapist may request to withdraw.
+    'min_withdrawal_amount' => env('SAKINA_MIN_WITHDRAWAL_AMOUNT', 20.00),
+
+    // Consecutive low mood scores (<= mood_alert_threshold) that raise a red flag.
+    'mood_alert_threshold' => env('SAKINA_MOOD_ALERT_THRESHOLD', 3),
+    'mood_alert_streak' => env('SAKINA_MOOD_ALERT_STREAK', 3),
+
+    // Max bytes for non-multipart (JSON/form) request bodies. 0 disables.
+    'max_json_body_bytes' => (int) env('SAKINA_MAX_JSON_BODY_BYTES', 262144),
 ];

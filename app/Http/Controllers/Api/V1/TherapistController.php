@@ -7,7 +7,10 @@ use App\Http\Requests\Api\V1\Therapist\SubmitApprovalRequest;
 use App\Http\Requests\Api\V1\Therapist\UpdateTherapistSettingsRequest;
 use App\Repositories\Contracts\TherapistRepositoryInterface;
 use App\Services\Session\SessionService;
+use App\Services\Therapist\TherapistClientService;
+use App\Services\Therapist\TherapistReportService;
 use App\Services\Therapist\TherapistService;
+use App\Services\Wallet\WalletService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -18,6 +21,9 @@ class TherapistController extends Controller
         private TherapistService $therapistService,
         private SessionService $sessionService,
         private TherapistRepositoryInterface $therapists,
+        private TherapistClientService $clients,
+        private WalletService $wallet,
+        private TherapistReportService $reports,
     ) {}
 
     /**
@@ -129,5 +135,83 @@ class TherapistController extends Controller
                 'total' => $paginator->total(),
             ],
         ]);
+    }
+
+    // ---- Clients -----------------------------------------------------------
+
+    public function clients(Request $request): JsonResponse
+    {
+        $paginator = $this->clients->list($request->user()->therapist, (int) $request->input('per_page', 15));
+
+        return response()->json([
+            'data' => collect($paginator->items())->map(fn ($p) => $this->clients->clientToArray($p)),
+            'pagination' => [
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+                'total' => $paginator->total(),
+            ],
+        ]);
+    }
+
+    public function client(Request $request, string $id): JsonResponse
+    {
+        return response()->json($this->clients->show($request->user()->therapist, $id));
+    }
+
+    public function clientNotes(Request $request, string $id): JsonResponse
+    {
+        return response()->json($this->clients->notes($request->user()->therapist, $id));
+    }
+
+    public function addClientNote(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate([
+            'body' => 'required|string|min:3|max:5000',
+            'session_id' => 'nullable|uuid',
+        ]);
+
+        $note = $this->clients->addNote($request->user()->therapist, $id, $data['body'], $data['session_id'] ?? null);
+
+        return response()->json(['message' => 'Note added.', 'note' => $this->clients->noteToArray($note)], 201);
+    }
+
+    // ---- Wallet & reports --------------------------------------------------
+
+    public function wallet(Request $request): JsonResponse
+    {
+        return response()->json($this->wallet->summary($request->user()->therapist));
+    }
+
+    public function withdraw(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'amount' => 'required|numeric|min:1|max:100000',
+            'payout_details' => 'required|array',
+            'payout_details.method' => 'required|string|in:bank_transfer,paypal,wise,other',
+            'payout_details.account' => 'required|string|max:255',
+            'payout_details.holder_name' => 'nullable|string|max:255',
+        ]);
+
+        $withdrawal = $this->wallet->requestWithdrawal(
+            $request->user()->therapist,
+            (float) $data['amount'],
+            $data['payout_details'],
+            $request->user(),
+        );
+
+        return response()->json([
+            'message' => 'Withdrawal request submitted for review.',
+            'withdrawal' => $this->wallet->withdrawalToArray($withdrawal),
+        ], 202);
+    }
+
+    public function reports(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'from' => 'nullable|date_format:Y-m-d',
+            'to' => 'nullable|date_format:Y-m-d|after_or_equal:from',
+        ]);
+
+        return response()->json($this->reports->build($request->user()->therapist, $data['from'] ?? null, $data['to'] ?? null));
     }
 }

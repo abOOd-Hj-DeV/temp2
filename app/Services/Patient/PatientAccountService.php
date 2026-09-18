@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
 use App\Repositories\Contracts\UserRepositoryInterface;
+use App\Services\AuditLogService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -21,30 +22,32 @@ class PatientAccountService
         private UserRepositoryInterface $users,
         private PatientRepositoryInterface $patients,
         private AssessmentRepositoryInterface $assessments,
+        private AuditLogService $audit,
     ) {}
 
     /**
-     * Deactivate now, purge after the grace period via
-     * PurgeScheduledDeletionsJob. Logging back in cancels the request.
+     * Revoke every token now; PruneScheduledDeletionsJob anonymises the
+     * account after the grace period. The account stays "active" so that
+     * logging back in within the window cancels the request.
      */
     public function requestDeletion(User $user): array
     {
         $scheduledAt = now()->addDays(self::DELETION_GRACE_DAYS);
 
         DB::transaction(function () use ($user, $scheduledAt) {
-            $this->users->update($user, [
-                'is_active' => false,
-                'deletion_scheduled_at' => $scheduledAt,
-            ]);
+            $this->users->update($user, ['deletion_scheduled_at' => $scheduledAt]);
 
             // Deactivate every live session token immediately.
             $user->tokens()->delete();
         });
 
+        $this->audit->record($user, AuditLogService::ACCOUNT_DELETION_REQUESTED, $user->id, [
+            'scheduled_at' => $scheduledAt->toISOString(),
+        ]);
         Log::info('Account deletion scheduled', ['user_id' => $user->id]);
 
         return [
-            'message' => __('Account deletion scheduled. Your data will be removed after :days days unless you log back in.', [
+            'message' => __('Account deletion scheduled. Your personal data will be anonymised after :days days unless you log back in.', [
                 'days' => self::DELETION_GRACE_DAYS,
             ]),
             'deletion_scheduled_at' => $scheduledAt->toISOString(),

@@ -6,6 +6,7 @@ use App\Enums\RedFlagPriority;
 use App\Enums\RedFlagType;
 use App\Enums\UserRole;
 use App\Models\Assessment;
+use App\Models\Patient;
 use App\Models\RedFlag;
 use App\Models\User;
 use App\Repositories\Contracts\RedFlagRepositoryInterface;
@@ -60,6 +61,43 @@ class RedFlagService
         return $redFlag;
     }
 
+    /**
+     * Red flag that is not tied to an assessment (e.g. a low-mood streak).
+     */
+    public function createFromMood(
+        Patient $patient,
+        RedFlagType $type,
+        RedFlagPriority $priority,
+        string $description,
+    ): RedFlag {
+        $redFlag = $this->redFlags->create([
+            'patient_id' => $patient->user_id,
+            'assessment_id' => null,
+            'type' => $type->value,
+            'description' => $description,
+            'priority' => $priority->value,
+            'assigned_to' => $this->defaultAssignee()?->id,
+            'status' => 'open',
+        ]);
+
+        try {
+            $this->notifications->redFlagRaised($redFlag);
+        } catch (\Throwable $e) {
+            Log::error('Red flag notification failed', [
+                'red_flag_id' => $redFlag->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        Log::info('Red flag created', [
+            'red_flag_id' => $redFlag->id,
+            'patient_id' => $patient->user_id,
+            'priority' => $priority->value,
+        ]);
+
+        return $redFlag;
+    }
+
     public function getPatientRedFlags(string $patientId): array
     {
         return $this->redFlags->findByPatientId($patientId)
@@ -72,6 +110,11 @@ class RedFlagService
         return $this->redFlags->getOpenRedFlags($filters)
             ->map(fn (RedFlag $flag) => $this->toArray($flag))
             ->all();
+    }
+
+    public function find(string $redFlagId): ?RedFlag
+    {
+        return $this->redFlags->findById($redFlagId);
     }
 
     public function updateStatus(string $redFlagId, string $status, ?string $actionTaken = null): bool
@@ -105,7 +148,7 @@ class RedFlagService
         return null;
     }
 
-    private function toArray(RedFlag $flag): array
+    public function toArray(RedFlag $flag): array
     {
         return [
             'id' => $flag->id,

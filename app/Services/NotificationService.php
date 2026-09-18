@@ -9,6 +9,7 @@ use App\Models\Patient;
 use App\Models\Payment;
 use App\Models\RedFlag;
 use App\Models\Therapist;
+use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Notifications\AssessmentCompletedNotification;
@@ -16,8 +17,10 @@ use App\Notifications\PaymentProofPendingNotification;
 use App\Notifications\PaymentReviewedNotification;
 use App\Notifications\RedFlagRaisedNotification;
 use App\Notifications\SessionBookedNotification;
+use App\Notifications\SessionReminderNotification;
 use App\Notifications\SessionStatusChangedNotification;
 use App\Notifications\TherapistApprovalNotification;
+use App\Notifications\TherapistSwitchDecidedNotification;
 use App\Services\Messaging\WhatsAppSenderInterface;
 use Illuminate\Support\Facades\Log;
 
@@ -134,6 +137,32 @@ class NotificationService
                 ['therapist_id' => $therapist->user_id]
             );
         }
+    }
+
+    public function therapistSwitchDecided(TherapistSwitch $switch): void
+    {
+        $switch->patient?->user?->notify(new TherapistSwitchDecidedNotification($switch));
+
+        if ($switch->status === 'approved') {
+            $switch->newTherapist?->user?->notify(new TherapistSwitchDecidedNotification($switch));
+        }
+    }
+
+    /**
+     * @param  string  $window  '24h' | '1h'
+     */
+    public function sessionReminder(TherapySession $session, string $window): void
+    {
+        $notification = new SessionReminderNotification($session, $window);
+
+        $session->patient?->user?->notify($notification);
+        $session->therapist?->user?->notify($notification);
+
+        $this->sendWhatsAppSafe(
+            $session->patient?->user?->whatsapp_number,
+            sprintf('Sakina reminder: your session is on %s at %s.', $session->session_date?->toDateString(), substr((string) $session->session_time, 0, 5)),
+            ['session_id' => $session->id, 'window' => $window]
+        );
     }
 
     private function sendWhatsAppSafe(?string $number, string $message, array $context = []): void

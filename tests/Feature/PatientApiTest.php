@@ -143,8 +143,9 @@ class PatientApiTest extends TestCase
         ])->assertOk();
 
         $this->user->refresh();
-        $this->assertFalse($this->user->is_active);
+        $this->assertTrue($this->user->is_active);
         $this->assertNotNull($this->user->deletion_scheduled_at);
+        $this->assertSame(0, $this->user->tokens()->count());
     }
 
     public function test_guest_gets_401_json_even_without_accept_header(): void

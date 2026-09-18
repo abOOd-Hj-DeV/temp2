@@ -3,15 +3,19 @@
 namespace App\Services\Subscription;
 
 use App\Enums\SubscriptionType;
+use App\Exceptions\ConflictException;
 use App\Models\Patient;
 use App\Models\Payment;
 use App\Models\Subscription;
 use App\Repositories\Contracts\PaymentRepositoryInterface;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
+use App\Services\AuditLogService;
 use App\Services\Billing\PaymentReviewService;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 
 class SubscriptionService
@@ -20,6 +24,7 @@ class SubscriptionService
         private SubscriptionRepositoryInterface $subscriptions,
         private PaymentRepositoryInterface $payments,
         private PaymentReviewService $paymentReview,
+        private AuditLogService $audit,
     ) {}
 
     /**
@@ -30,39 +35,54 @@ class SubscriptionService
     public function createWithProof(Patient $patient, string $type, UploadedFile $proof): array
     {
         $type = SubscriptionType::from($type);
+        $price = (float) config("sakina.subscription_prices.{$type->value}");
+        $disk = config('sakina.uploads_disk', 'local');
+        $path = $proof->store("payment-proofs/{$patient->user_id}", ['disk' => $disk]);
 
-        if ($this->subscriptions->hasPendingOrActive($patient->user_id)) {
-            throw ValidationException::withMessages([
-                'subscription' => 'You already have a pending or active subscription.',
-            ]);
+        try {
+            $result = DB::transaction(function () use ($patient, $type, $path, $price) {
+                // Serialise concurrent submissions from the same patient.
+                Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
+
+                if ($this->subscriptions->hasPendingOrActive($patient->user_id)) {
+                    throw ValidationException::withMessages([
+                        'subscription' => 'You already have a pending or active subscription.',
+                    ]);
+                }
+
+                $subscription = $this->subscriptions->create([
+                    'patient_id' => $patient->user_id,
+                    'type' => $type->value,
+                    'start_date' => null, // dates are set on approval
+                    'end_date' => null,
+                    'price' => $price,
+                    'payment_proof_path' => $path,
+                    'verification_status' => 'pending',
+                ]);
+
+                $payment = $this->paymentReview->createPayment(
+                    amount: $price,
+                    proofPath: $path,
+                    subscriptionId: $subscription->id,
+                );
+
+                $this->audit->record($patient->user_id, AuditLogService::SUBSCRIPTION_CREATED, $subscription->id, [
+                    'type' => $type->value,
+                    'price' => $price,
+                    'payment_id' => $payment->id,
+                ]);
+
+                return ['subscription' => $subscription, 'payment' => $payment];
+            });
+        } catch (UniqueConstraintViolationException) {
+            Storage::disk($disk)->delete($path);
+            throw new ConflictException('You already have a pending or active subscription.');
+        } catch (\Throwable $e) {
+            Storage::disk($disk)->delete($path);
+            throw $e;
         }
 
-        $price = (float) config("sakina.subscription_prices.{$type->value}");
-
-        return DB::transaction(function () use ($patient, $type, $proof, $price) {
-            $path = $proof->store(
-                "payment-proofs/{$patient->user_id}",
-                ['disk' => config('sakina.uploads_disk', 'local')]
-            );
-
-            $subscription = $this->subscriptions->create([
-                'patient_id' => $patient->user_id,
-                'type' => $type->value,
-                'start_date' => null, // dates are set on approval
-                'end_date' => null,
-                'price' => $price,
-                'payment_proof_path' => $path,
-                'verification_status' => 'pending',
-            ]);
-
-            $payment = $this->paymentReview->createPayment(
-                amount: $price,
-                proofPath: $path,
-                subscriptionId: $subscription->id,
-            );
-
-            return ['subscription' => $subscription, 'payment' => $payment];
-        });
+        return $result;
     }
 
     public function current(Patient $patient): ?Subscription

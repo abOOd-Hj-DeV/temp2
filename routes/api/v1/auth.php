@@ -12,6 +12,8 @@ Route::prefix('auth')->name('auth.')->group(function () {
 
     Route::post('/otp/resend', [AuthController::class, 'resendOTP'])
         ->middleware('throttle:3,1')->name('otp.resend');
+    Route::post('/otp/send', [AuthController::class, 'resendOTP'])
+        ->middleware('throttle:3,1')->name('otp.send');
 
     Route::post('/login', [AuthController::class, 'login'])
         ->middleware('throttle:10,1')->name('login');

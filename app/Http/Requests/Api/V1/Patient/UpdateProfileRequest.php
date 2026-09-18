@@ -19,10 +19,10 @@ class UpdateProfileRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'full_name' => ['required', 'string', 'max:255'],
-            'age' => ['required', 'integer', 'min:18', 'max:120'],
-            'gender' => ['required', 'in:male,female,other'],
-            'language' => ['required', 'string', 'in:ar,en'],
+            'full_name' => ['sometimes', 'required', 'string', 'max:255'],
+            'age' => ['sometimes', 'required', 'integer', 'min:18', 'max:120'],
+            'gender' => ['sometimes', 'required', 'in:male,female,other'],
+            'language' => ['sometimes', 'required', 'string', 'in:ar,en'],
         ];
     }
 }

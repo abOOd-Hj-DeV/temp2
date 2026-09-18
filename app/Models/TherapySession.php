@@ -18,7 +18,7 @@ class TherapySession extends Model
     protected $fillable = [
         'patient_id', 'therapist_id', 'session_date', 'session_time',
         'medium', 'price', 'status', 'link', 'summary', 'is_initial',
-        'payment_status', 'reminder_sent',
+        'payment_status', 'reminder_sent', 'reminder_1h_sent',
     ];
 
     protected $casts = [
@@ -26,6 +26,7 @@ class TherapySession extends Model
         'price' => 'decimal:2',
         'is_initial' => 'boolean',
         'reminder_sent' => 'boolean',
+        'reminder_1h_sent' => 'boolean',
         'status' => SessionStatus::class,
         'medium' => SessionMedium::class,
         'payment_status' => PaymentStatus::class,

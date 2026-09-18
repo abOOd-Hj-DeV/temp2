@@ -4,6 +4,7 @@ namespace App\Repositories\Eloquent;
 
 use App\Models\User;
 use App\Repositories\Contracts\UserRepositoryInterface;
+use App\Support\PhoneNumber;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
 
@@ -44,12 +45,12 @@ class UserRepository implements UserRepositoryInterface
 
     public function findByWhatsapp(string $whatsappNumber): ?User
     {
-        return User::where('whatsapp_number', $whatsappNumber)->first();
+        return User::whereIn('whatsapp_number', PhoneNumber::variants($whatsappNumber))->first();
     }
 
     public function findActiveByWhatsapp(string $whatsappNumber): ?User
     {
-        return User::where('whatsapp_number', $whatsappNumber)
+        return User::whereIn('whatsapp_number', PhoneNumber::variants($whatsappNumber))
             ->where('is_active', true)
             ->whereNotNull('phone_verified_at')
             ->first();

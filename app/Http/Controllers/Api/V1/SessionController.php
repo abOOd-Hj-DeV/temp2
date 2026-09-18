@@ -106,6 +106,16 @@ class SessionController extends Controller
         return response()->json(['message' => 'Session completed.', 'session' => $this->sessionService->toArray($session)]);
     }
 
+    /** Therapist writes the post-session report (completes a confirmed session). */
+    public function report(Request $request, TherapySession $session): JsonResponse
+    {
+        $data = $request->validate(['summary' => 'required|string|min:10|max:5000']);
+
+        $session = $this->sessionService->report($session, $request->user(), $data['summary']);
+
+        return response()->json(['message' => 'Report saved.', 'session' => $this->sessionService->toArray($session)]);
+    }
+
     /** Therapist attaches the meeting link. */
     public function setLink(SessionLinkRequest $request, TherapySession $session): JsonResponse
     {

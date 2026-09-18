@@ -2,11 +2,13 @@
 
 namespace App\Repositories\Eloquent;
 
+use App\Enums\PaymentStatus;
 use App\Enums\SessionStatus;
 use App\Models\TherapySession;
 use App\Repositories\Contracts\SessionRepositoryInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Carbon;
 
 class SessionRepository implements SessionRepositoryInterface
 {
@@ -64,6 +66,48 @@ class SessionRepository implements SessionRepositoryInterface
     public function hasConflict(string $therapistId, string $date, string $time): bool
     {
         return in_array(substr($time, 0, 5), $this->bookedTimesFor($therapistId, $date), true);
+    }
+
+    public function hasActiveSessionAt(string $patientId, string $date, string $time): bool
+    {
+        return TherapySession::where('patient_id', $patientId)
+            ->whereDate('session_date', $date)
+            ->where('session_time', 'like', substr($time, 0, 5).'%')
+            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->exists();
+    }
+
+    public function countNonCancelledBetween(string $patientId, string $therapistId): int
+    {
+        return TherapySession::where('patient_id', $patientId)
+            ->where('therapist_id', $therapistId)
+            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->count();
+    }
+
+    public function hasUsedInitialSession(string $patientId): bool
+    {
+        return TherapySession::where('patient_id', $patientId)
+            ->where(fn ($q) => $q
+                ->where('status', '!=', SessionStatus::CANCELLED->value)
+                ->orWhere('payment_status', PaymentStatus::FREE->value))
+            ->exists();
+    }
+
+    public function dueForReminder(Carbon $from, Carbon $to, string $flag): Collection
+    {
+        return TherapySession::with(['patient.user', 'therapist.user'])
+            ->where('status', SessionStatus::CONFIRMED->value)
+            ->where($flag, false)
+            ->whereDate('session_date', '>=', $from->toDateString())
+            ->whereDate('session_date', '<=', $to->toDateString())
+            ->get()
+            ->filter(function (TherapySession $session) use ($from, $to) {
+                $startsAt = Carbon::parse($session->session_date->toDateString().' '.substr((string) $session->session_time, 0, 5));
+
+                return $startsAt->between($from, $to);
+            })
+            ->values();
     }
 
     public function activeSessionsForDate(string $therapistId, string $date): Collection

@@ -2,6 +2,7 @@
 
 namespace App\Services\Patient;
 
+use App\Enums\SessionStatus;
 use App\Models\Patient;
 use App\Models\Program;
 use App\Models\TherapySession;
@@ -9,6 +10,7 @@ use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
  * Read-models for the patient home screens: dashboard, progress,
@@ -75,6 +77,43 @@ class PatientDashboardService
                 ->get()
                 ->map(fn (TherapySession $s) => $this->sessionToArray($s))
                 ->all(),
+        ];
+    }
+
+    /**
+     * What the patient sees right after a session: the therapist's summary,
+     * whether the session actually happened, and the next bookable step.
+     */
+    public function postSession(User $user, string $sessionId): array
+    {
+        $patient = $this->requireProfile($user);
+
+        $session = TherapySession::with('therapist')
+            ->where('patient_id', $patient->user_id)
+            ->whereKey($sessionId)
+            ->first();
+
+        if (! $session) {
+            throw new NotFoundHttpException('Session not found.');
+        }
+
+        $status = $session->status instanceof SessionStatus ? $session->status : SessionStatus::from($session->status);
+        $canReview = $status === SessionStatus::COMPLETED;
+
+        $next = $this->upcomingSessions($patient, 1)->first();
+
+        return [
+            'session' => $this->sessionToArray($session) + [
+                'therapist_name' => $session->therapist?->full_name,
+                'summary' => $canReview ? $session->summary : null,
+            ],
+            'completed' => $canReview,
+            'next_session' => $next ? $this->sessionToArray($next) : null,
+            'next_steps' => array_values(array_filter([
+                $canReview ? null : 'wait_for_completion',
+                $next ? null : 'book_next_session',
+                'log_mood',
+            ])),
         ];
     }
 

@@ -18,6 +18,7 @@ use App\Repositories\Eloquent\SessionRepository;
 use App\Repositories\Eloquent\SubscriptionRepository;
 use App\Repositories\Eloquent\TherapistRepository;
 use App\Repositories\Eloquent\UserRepository;
+use App\Services\Messaging\DisabledWhatsAppSender;
 use App\Services\Messaging\LogWhatsAppSender;
 use App\Services\Messaging\UltraMsgWhatsAppSender;
 use App\Services\Messaging\WhatsAppSenderInterface;
@@ -50,7 +51,9 @@ class RepositoryServiceProvider extends ServiceProvider
                 );
             }
 
-            return new LogWhatsAppSender;
+            return $this->app->environment('production')
+                ? new DisabledWhatsAppSender
+                : new LogWhatsAppSender;
         });
     }
 }

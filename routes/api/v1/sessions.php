@@ -19,10 +19,11 @@ Route::middleware(['auth:api', 'status'])->prefix('sessions')->group(function ()
     Route::get('/{session}', [SessionController::class, 'show'])->whereUuid('session');
     Route::post('/{session}/cancel', [SessionController::class, 'cancel'])->whereUuid('session');
 
-    // Therapist actions (ownership enforced in the service).
-    Route::middleware('role:'.UserRole::THERAPIST->value)->group(function () {
+    // Therapist actions (ownership enforced in the service; approved only).
+    Route::middleware(['role:'.UserRole::THERAPIST->value, 'therapist.approved'])->group(function () {
         Route::post('/{session}/confirm', [SessionController::class, 'confirm'])->whereUuid('session');
         Route::post('/{session}/complete', [SessionController::class, 'complete'])->whereUuid('session');
+        Route::post('/{session}/report', [SessionController::class, 'report'])->whereUuid('session');
         Route::post('/{session}/link', [SessionController::class, 'setLink'])->whereUuid('session');
     });
 });
