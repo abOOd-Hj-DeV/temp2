@@ -59,6 +59,11 @@ class RoleConsistencyTest extends TestCase
         $user->assignRole('admin');
         $this->assertTrue($user->fresh()->hasRole('admin'));
 
+        // Even before reconcile, a drifted Spatie row must not grant access.
+        Sanctum::actingAs($user->fresh(), ['*'], 'api');
+        $this->getJson('/api/v1/admin/red-flags')->assertForbidden();
+        $this->app['auth']->forgetGuards();
+
         // The reconcile step used by the migration restores agreement.
         $user->fresh()->syncSpatieRole();
         $this->assertSame(['patient'], $user->fresh()->getRoleNames()->all());
