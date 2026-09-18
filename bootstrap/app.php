@@ -27,7 +27,9 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         // API-only backend: every api/* request negotiates JSON so auth
         // failures return 401 JSON instead of a redirect to a web login.
-        $middleware->api(prepend: [SecurityHeaders::class, ForceJsonResponse::class, LimitJsonBodySize::class]);
+        // Global so unmatched routes (404) and other pre-routing responses carry the headers too.
+        $middleware->prepend(SecurityHeaders::class);
+        $middleware->api(prepend: [ForceJsonResponse::class, LimitJsonBodySize::class]);
         // Global per-user/IP ceiling on every api/* route (limiter defined in AppServiceProvider).
         $middleware->throttleApi();
         $middleware->alias([

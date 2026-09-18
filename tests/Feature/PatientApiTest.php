@@ -162,6 +162,16 @@ class PatientApiTest extends TestCase
             ->assertHeader('X-Content-Type-Options', 'nosniff');
     }
 
+    public function test_unmatched_api_routes_still_carry_security_headers(): void
+    {
+        $this->getJson('/api/v1/does-not-exist')->assertNotFound()
+            ->assertHeader('X-Content-Type-Options', 'nosniff')
+            ->assertHeader('X-Frame-Options', 'DENY')
+            ->assertHeader('Referrer-Policy', 'no-referrer')
+            ->assertHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'")
+            ->assertHeader('Cache-Control', 'no-store, private');
+    }
+
     public function test_account_deletion_schedules_and_revokes_tokens(): void
     {
         $this->createProfile();
