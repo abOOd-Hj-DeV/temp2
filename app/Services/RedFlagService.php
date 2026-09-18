@@ -148,11 +148,11 @@ class RedFlagService
             return null;
         }
 
-        if ($user->hasAnyRole(array_map(fn (UserRole $r) => $r->value, self::CLINICAL_STAFF_ROLES))) {
+        if (in_array($user->role, self::CLINICAL_STAFF_ROLES, true)) {
             return $user;
         }
 
-        if (! $user->hasRole(UserRole::THERAPIST->value)) {
+        if ($user->role !== UserRole::THERAPIST) {
             return null;
         }
 
