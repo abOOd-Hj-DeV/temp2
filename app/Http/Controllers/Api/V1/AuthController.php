@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\V1\Auth\ForgotPasswordRequest;
 use App\Http\Requests\Api\V1\Auth\LoginRequest;
 use App\Http\Requests\Api\V1\Auth\OTPRequest;
+use App\Http\Requests\Api\V1\Auth\RefreshTokenRequest;
 use App\Http\Requests\Api\V1\Auth\RegisterRequest;
 use App\Http\Requests\Api\V1\Auth\ResendOTPRequest;
 use App\Http\Requests\Api\V1\Auth\ResetPasswordRequest;
@@ -81,5 +82,15 @@ class AuthController extends Controller
     public function logout(Request $request): JsonResponse
     {
         return response()->json($this->auth->logout($request->user()));
+    }
+
+    public function logoutAll(Request $request): JsonResponse
+    {
+        return response()->json($this->auth->logoutAll($request->user()));
+    }
+
+    public function refresh(RefreshTokenRequest $request): JsonResponse
+    {
+        return response()->json($this->auth->refresh($request->validated('refresh_token')));
     }
 }

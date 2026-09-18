@@ -27,8 +27,12 @@ Route::prefix('auth')->name('auth.')->group(function () {
     Route::post('/status', [AuthController::class, 'checkStatus'])
         ->middleware('throttle:20,1')->name('status.check');
 
+    Route::post('/refresh', [AuthController::class, 'refresh'])
+        ->middleware('throttle:10,1')->name('refresh');
+
     Route::middleware('auth:api')->group(function () {
         Route::get('/user', [AuthController::class, 'user'])->name('user');
         Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
+        Route::post('/logout-all', [AuthController::class, 'logoutAll'])->name('logout.all');
     });
 });

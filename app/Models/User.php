@@ -62,6 +62,18 @@ class User extends Authenticatable
         $this->syncRoles([$this->role->value]);
     }
 
+    public function refreshTokens(): HasMany
+    {
+        return $this->hasMany(RefreshToken::class, 'user_id');
+    }
+
+    /** Revoke every access and refresh token (logout everywhere / compromise). */
+    public function revokeAllTokens(): void
+    {
+        $this->refreshTokens()->whereNull('revoked_at')->update(['revoked_at' => now()]);
+        $this->tokens()->delete();
+    }
+
     public function patient(): HasOne
     {
         return $this->hasOne(Patient::class, 'user_id');
