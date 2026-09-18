@@ -205,7 +205,15 @@ class SessionBookingTest extends TestCase
         $this->postJson("/api/v1/sessions/{$id}/confirm")
             ->assertOk()->assertJsonPath('session.status', 'confirmed');
         $this->postJson("/api/v1/sessions/{$id}/link", ['link' => 'https://meet.example.com/abc'])
-            ->assertOk()->assertJsonPath('session.link', 'https://meet.example.com/abc');
+            ->assertStatus(422);
+        $this->postJson("/api/v1/sessions/{$id}/link", ['link' => 'https://zoom.us/j/123456'])
+            ->assertOk()->assertJsonPath('session.link', 'https://zoom.us/j/123456');
+
+        // Cannot complete before the session starts.
+        $this->postJson("/api/v1/sessions/{$id}/complete", ['summary' => 'went well'])
+            ->assertStatus(422);
+
+        $this->travelTo(now()->addDays(2));
         $this->postJson("/api/v1/sessions/{$id}/complete", ['summary' => 'went well'])
             ->assertOk()->assertJsonPath('session.status', 'completed');
 

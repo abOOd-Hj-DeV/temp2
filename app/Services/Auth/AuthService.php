@@ -5,6 +5,7 @@ namespace App\Services\Auth;
 use App\Enums\UserRole;
 use App\Models\User;
 use App\Repositories\Contracts\UserRepositoryInterface;
+use App\Services\AuditLogService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -32,6 +33,7 @@ class AuthService
     public function __construct(
         private UserRepositoryInterface $users,
         private OtpService $otp,
+        private AuditLogService $audit,
     ) {}
 
     public function register(array $data): array
@@ -175,10 +177,12 @@ class AuthService
         // Logging back in during the grace period cancels scheduled deletion.
         if ($user->deletion_scheduled_at !== null) {
             $update['deletion_scheduled_at'] = null;
+            $this->audit->record($user, AuditLogService::ACCOUNT_DELETION_CANCELLED, $user->id);
         }
 
         $this->users->update($user, $update);
         Cache::forget($this->lockoutKey($data['whatsapp_number']));
+        $this->audit->record($user, AuditLogService::LOGIN_SUCCEEDED, $user->id);
 
         return array_merge(
             ['message' => __('Login successful.'), 'user' => $user->refresh()],
@@ -205,10 +209,10 @@ class AuthService
     {
         $user = $this->users->findByWhatsapp($whatsappNumber);
 
+        // Only reveal the state a legitimate owner needs mid-onboarding:
+        // whether an OTP verification is still pending for this number.
         return [
-            'registered' => $user !== null,
-            'verified' => (bool) $user?->isVerified(),
-            'active' => (bool) $user?->is_active,
+            'verification_pending' => $user !== null && ! $user->isVerified(),
         ];
     }
 
@@ -241,6 +245,7 @@ class AuthService
         // Revoke all existing tokens so the new password is required everywhere.
         $user->tokens()->delete();
 
+        $this->audit->record($user, AuditLogService::PASSWORD_RESET, $user->id);
         Log::info('Password reset completed', ['user_id' => $user->id]);
 
         return ['message' => __('Password updated successfully.')];

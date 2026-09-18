@@ -53,6 +53,11 @@ class PatientController extends Controller
         return response()->json($this->dashboard->appointments($request->user()));
     }
 
+    public function getPostSession(Request $request, string $sessionId): JsonResponse
+    {
+        return response()->json($this->dashboard->postSession($request->user(), $sessionId));
+    }
+
     public function getPrograms(Request $request): JsonResponse
     {
         return response()->json($this->dashboard->programs($request->user()));

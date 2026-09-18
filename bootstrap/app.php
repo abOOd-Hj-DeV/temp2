@@ -2,9 +2,12 @@
 
 use App\Http\Middleware\CheckRole;
 use App\Http\Middleware\CheckUserStatus;
+use App\Http\Middleware\EnsureTherapistApproved;
 use App\Http\Middleware\ForceJsonResponse;
+use App\Http\Middleware\LimitJsonBodySize;
 use App\Jobs\CleanupUnverifiedUsersJob;
 use App\Jobs\PruneScheduledDeletionsJob;
+use App\Jobs\SendSessionRemindersJob;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -20,10 +23,11 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         // API-only backend: every api/* request negotiates JSON so auth
         // failures return 401 JSON instead of a redirect to a web login.
-        $middleware->api(prepend: [ForceJsonResponse::class]);
+        $middleware->api(prepend: [ForceJsonResponse::class, LimitJsonBodySize::class]);
         $middleware->alias([
             'role' => CheckRole::class,
             'status' => CheckUserStatus::class,
+            'therapist.approved' => EnsureTherapistApproved::class,
         ]);
     })
     ->withSchedule(function (Schedule $schedule): void {
@@ -31,6 +35,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->job(new CleanupUnverifiedUsersJob)->hourly();
         // Permanently purge accounts whose deletion grace period elapsed.
         $schedule->job(new PruneScheduledDeletionsJob)->daily();
+
+        $schedule->job(new SendSessionRemindersJob)->everyFiveMinutes();
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

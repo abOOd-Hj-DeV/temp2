@@ -3,26 +3,34 @@
 namespace App\Jobs;
 
 use App\Models\User;
+use App\Services\Patient\AccountAnonymizer;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Permanently deletes accounts whose deletion grace period has elapsed.
+ * Anonymises accounts whose deletion grace period has elapsed. Records are
+ * never hard-deleted so sessions and payments survive for audit.
  * Scheduled daily — see bootstrap/app.php.
  */
 class PruneScheduledDeletionsJob implements ShouldQueue
 {
     use Queueable;
 
-    public function handle(): void
+    public function handle(AccountAnonymizer $anonymizer): void
     {
-        $deleted = User::whereNotNull('deletion_scheduled_at')
-            ->where('deletion_scheduled_at', '<=', now())
-            ->delete();
+        $count = 0;
 
-        if ($deleted > 0) {
-            Log::info('Purged accounts past deletion grace period', ['count' => $deleted]);
+        User::whereNotNull('deletion_scheduled_at')
+            ->where('deletion_scheduled_at', '<=', now())
+            ->whereNull('anonymized_at')
+            ->each(function (User $user) use ($anonymizer, &$count) {
+                $anonymizer->anonymize($user);
+                $count++;
+            });
+
+        if ($count > 0) {
+            Log::info('Anonymised accounts past deletion grace period', ['count' => $count]);
         }
     }
 }

@@ -54,6 +54,16 @@ class Therapist extends Model
     /**
      * العلاقة مع الجلسات
      */
+    public function withdrawals(): HasMany
+    {
+        return $this->hasMany(WalletWithdrawal::class, 'therapist_id', 'user_id');
+    }
+
+    public function clientNotes(): HasMany
+    {
+        return $this->hasMany(TherapistClientNote::class, 'therapist_id', 'user_id');
+    }
+
     public function sessions(): HasMany
     {
         return $this->hasMany(TherapySession::class, 'therapist_id', 'user_id');

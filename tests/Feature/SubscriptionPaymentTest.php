@@ -154,7 +154,7 @@ class SubscriptionPaymentTest extends TestCase
         $this->assertSame('rejected', Subscription::first()->verification_status);
         // Double-review is blocked.
         $this->postJson("/api/v1/admin/payments/{$paymentId}/review", ['action' => 'approve'])
-            ->assertStatus(422);
+            ->assertStatus(409);
     }
 
     public function test_session_payment_proof_flow(): void

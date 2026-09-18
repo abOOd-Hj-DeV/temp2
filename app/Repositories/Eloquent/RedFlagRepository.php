@@ -99,11 +99,11 @@ class RedFlagRepository implements RedFlagRepositoryInterface
         }
 
         return [
-            'total' => $query->count(),
-            'open' => $query->where('status', 'open')->count(),
-            'resolved' => $query->where('status', 'resolved')->count(),
-            'high_priority' => $query->where('priority', 'high')->count(),
-            'by_type' => $query->select('type', DB::raw('count(*) as count'))
+            'total' => (clone $query)->count(),
+            'open' => (clone $query)->where('status', 'open')->count(),
+            'resolved' => (clone $query)->where('status', 'resolved')->count(),
+            'high_priority' => (clone $query)->where('status', 'open')->where('priority', 'high')->count(),
+            'by_type' => (clone $query)->select('type', DB::raw('count(*) as count'))
                 ->groupBy('type')
                 ->pluck('count', 'type')
                 ->toArray(),

@@ -33,6 +33,7 @@ class User extends Authenticatable
         'phone_verified_at' => 'datetime',
         'last_login' => 'datetime',
         'deletion_scheduled_at' => 'datetime',
+        'anonymized_at' => 'datetime',
         'is_active' => 'boolean',
         'role' => UserRole::class,
     ];

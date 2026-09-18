@@ -15,7 +15,7 @@ class UpdateTherapistSettingsRequest extends FormRequest
             'languages.*' => 'string|max:10',
             'bio' => 'nullable|string|max:2000',
             'availability' => 'sometimes|array',
-            'clients_limit' => 'sometimes|integer|min:1|max:500',
+            'clients_limit' => 'prohibited',
         ];
     }
 }

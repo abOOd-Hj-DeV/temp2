@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\Messaging\WhatsAppSenderInterface;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -176,7 +177,11 @@ class TherapistApiTest extends TestCase
     public function test_approval_flow_repending_then_admin_approve(): void
     {
         Sanctum::actingAs($this->therapistUser, ['*'], 'api');
-        $this->postJson('/api/v1/therapists/me/approval')->assertStatus(202);
+        $this->postJson('/api/v1/therapists/me/approval')->assertStatus(422);
+
+        $this->postJson('/api/v1/therapists/me/approval', [
+            'license' => UploadedFile::fake()->create('license.pdf', 100, 'application/pdf'),
+        ])->assertStatus(202);
         $this->assertSame('pending', $this->therapist->refresh()->approval_status->value);
 
         $admin = $this->makeUser('admin', '+963900000013');

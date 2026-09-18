@@ -5,6 +5,7 @@ namespace App\Repositories\Contracts;
 use App\Models\TherapySession;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Carbon;
 
 interface SessionRepositoryInterface
 {
@@ -35,6 +36,21 @@ interface SessionRepositoryInterface
      * Whether the therapist has a non-cancelled session at this exact slot.
      */
     public function hasConflict(string $therapistId, string $date, string $time): bool;
+
+    /** Patient already holds a non-cancelled session at this exact date/time. */
+    public function hasActiveSessionAt(string $patientId, string $date, string $time): bool;
+
+    /** Non-cancelled sessions between a patient and a therapist. */
+    public function countNonCancelledBetween(string $patientId, string $therapistId): int;
+
+    /**
+     * Whether the patient has already consumed their initial session:
+     * any non-cancelled session, or any free session even if cancelled.
+     */
+    public function hasUsedInitialSession(string $patientId): bool;
+
+    /** Confirmed sessions starting within the given window that still need a reminder. */
+    public function dueForReminder(Carbon $from, Carbon $to, string $flag): Collection;
 
     /**
      * Non-cancelled sessions for a therapist on a given date.

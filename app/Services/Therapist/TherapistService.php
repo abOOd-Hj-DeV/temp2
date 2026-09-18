@@ -3,27 +3,33 @@
 namespace App\Services\Therapist;
 
 use App\Enums\ApprovalStatus;
+use App\Enums\SessionStatus;
+use App\Exceptions\ConflictException;
 use App\Models\Therapist;
+use App\Models\User;
 use App\Repositories\Contracts\SessionRepositoryInterface;
 use App\Repositories\Contracts\TherapistRepositoryInterface;
+use App\Services\AuditLogService;
 use App\Services\NotificationService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class TherapistService
 {
     /**
-     * Fields a therapist may edit on their own profile.
-     * Approval status, rating and client counters stay system-owned.
+     * Fields a therapist may edit on their own profile. Approval status,
+     * rating, client counters and clients_limit stay admin/system-owned.
      */
-    private const EDITABLE_FIELDS = ['specialty', 'country', 'languages', 'bio', 'availability', 'clients_limit'];
+    private const EDITABLE_FIELDS = ['specialty', 'country', 'languages', 'bio', 'availability'];
 
     public function __construct(
         private TherapistRepositoryInterface $therapists,
         private SessionRepositoryInterface $sessions,
         private NotificationService $notifications,
+        private AuditLogService $audit,
     ) {}
 
     public function listTherapists(array $filters, int $perPage = 15): LengthAwarePaginator
@@ -138,6 +144,15 @@ class TherapistService
                     throw ValidationException::withMessages(['availability' => "Window '{$window}' ends before it starts."]);
                 }
             }
+
+            $sorted = array_values($windows);
+            sort($sorted);
+
+            for ($i = 1; $i < count($sorted); $i++) {
+                if (substr($sorted[$i], 0, 5) < substr($sorted[$i - 1], 6)) {
+                    throw ValidationException::withMessages(['availability' => "Windows overlap on {$day}."]);
+                }
+            }
         }
 
         return $availability;
@@ -149,6 +164,10 @@ class TherapistService
      */
     public function submitForApproval(Therapist $therapist, ?UploadedFile $license = null): Therapist
     {
+        if (! $license && ! $therapist->license_file_path) {
+            throw ValidationException::withMessages(['license' => 'A license file is required before submitting for approval.']);
+        }
+
         $data = ['approval_status' => ApprovalStatus::PENDING->value];
 
         if ($license) {
@@ -163,16 +182,80 @@ class TherapistService
         return $therapist->refresh();
     }
 
+    /**
+     * Admin approves/rejects a therapist. Approval requires a license on
+     * file; the row is locked so two admins cannot race each other.
+     */
+    public function decideApproval(string $therapistUserId, ApprovalStatus $status, User $admin, ?string $note = null): Therapist
+    {
+        $therapist = DB::transaction(function () use ($therapistUserId, $status, $admin, $note) {
+            $therapist = Therapist::whereKey($therapistUserId)->lockForUpdate()->first();
+
+            if (! $therapist) {
+                throw ValidationException::withMessages(['therapist' => 'Therapist not found.']);
+            }
+
+            if ($therapist->approval_status === $status) {
+                throw new ConflictException("Therapist is already {$status->value}.");
+            }
+
+            if ($status === ApprovalStatus::APPROVED && ! $therapist->license_file_path) {
+                throw ValidationException::withMessages(['therapist' => 'Cannot approve a therapist without a license file.']);
+            }
+
+            $this->therapists->update($therapist, ['approval_status' => $status->value]);
+
+            $this->audit->record($admin, AuditLogService::THERAPIST_APPROVAL_DECIDED, $therapist->user_id, [
+                'status' => $status->value,
+                'note' => $note,
+            ]);
+
+            return $therapist->refresh();
+        });
+
+        $this->notifications->therapistApprovalDecided($therapist);
+
+        return $therapist;
+    }
+
+    /** Admin-only: change how many distinct clients a therapist may carry. */
+    public function updateClientsLimit(Therapist $therapist, int $limit, User $admin): Therapist
+    {
+        $previous = $therapist->clients_limit;
+        $this->therapists->update($therapist, ['clients_limit' => $limit]);
+
+        $this->audit->record($admin, AuditLogService::THERAPIST_LIMIT_CHANGED, $therapist->user_id, [
+            'from' => $previous,
+            'to' => $limit,
+        ]);
+
+        return $therapist->refresh();
+    }
+
     public function dashboard(Therapist $therapist): array
     {
-        $upcoming = $this->sessions->forTherapist($therapist->user_id, 10);
+        $today = now()->toDateString();
+        $base = $therapist->sessions();
 
         return [
             'therapist' => $this->toArray($therapist),
             'clients_count' => $therapist->clients_count,
             'clients_limit' => $therapist->clients_limit,
             'can_accept_clients' => $therapist->can_accept_new_clients,
-            'upcoming_sessions' => $upcoming->items(),
+            'stats' => [
+                'pending' => (clone $base)->where('status', SessionStatus::PENDING->value)->count(),
+                'confirmed' => (clone $base)->where('status', SessionStatus::CONFIRMED->value)->count(),
+                'completed' => (clone $base)->where('status', SessionStatus::COMPLETED->value)->count(),
+                'today' => (clone $base)->whereDate('session_date', $today)
+                    ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])->count(),
+            ],
+            'upcoming_sessions' => (clone $base)
+                ->whereDate('session_date', '>=', $today)
+                ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+                ->orderBy('session_date')->orderBy('session_time')
+                ->limit(10)
+                ->get()
+                ->all(),
         ];
     }
 
@@ -181,6 +264,7 @@ class TherapistService
         return [
             'id' => $therapist->user_id,
             'full_name' => $therapist->full_name,
+            'has_license' => $therapist->license_file_path !== null,
             'specialty' => $therapist->specialty,
             'country' => $therapist->country,
             'languages' => $therapist->languages,

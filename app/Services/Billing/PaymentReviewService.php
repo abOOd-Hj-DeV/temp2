@@ -4,18 +4,24 @@ namespace App\Services\Billing;
 
 use App\Enums\PaymentReviewStatus;
 use App\Enums\PaymentStatus;
+use App\Enums\SessionStatus;
 use App\Enums\SubscriptionType;
+use App\Exceptions\ConflictException;
 use App\Jobs\ReviewPaymentProofJob;
 use App\Models\Payment;
+use App\Models\Subscription;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\PaymentRepositoryInterface;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
+use App\Services\AuditLogService;
 use App\Services\NotificationService;
 use App\Services\Session\SessionService;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 
 class PaymentReviewService
@@ -25,11 +31,13 @@ class PaymentReviewService
         private SubscriptionRepositoryInterface $subscriptions,
         private SessionService $sessionService,
         private NotificationService $notifications,
+        private AuditLogService $audit,
     ) {}
 
     /**
-     * Persist a payment row and dispatch the queue job that alerts staff
-     * to review the proof manually.
+     * Persist a payment row and dispatch the queue job that alerts staff to
+     * review the proof manually. The job is only released once the
+     * surrounding transaction commits so the worker can always find the row.
      */
     public function createPayment(float $amount, string $proofPath, ?string $subscriptionId = null, ?string $sessionId = null): Payment
     {
@@ -41,67 +49,110 @@ class PaymentReviewService
             'status' => PaymentReviewStatus::PENDING->value,
         ]);
 
-        ReviewPaymentProofJob::dispatch($payment->id);
+        ReviewPaymentProofJob::dispatch($payment->id)->afterCommit();
 
         return $payment;
     }
 
     /**
      * A patient uploads proof for a payable (non-free, unpaid) session.
+     * The session row is locked while the open-payment check and insert
+     * run; the partial unique index on pending payments is the backstop.
      */
     public function submitSessionProof(TherapySession $session, UploadedFile $proof): Payment
     {
-        if ($session->payment_status !== PaymentStatus::PENDING) {
-            throw ValidationException::withMessages([
-                'payment_status' => 'This session does not require a payment proof.',
-            ]);
+        $disk = config('sakina.uploads_disk', 'local');
+        $path = $proof->store("payment-proofs/{$session->patient_id}", ['disk' => $disk]);
+
+        try {
+            return DB::transaction(function () use ($session, $path) {
+                $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+
+                if ($locked->payment_status !== PaymentStatus::PENDING) {
+                    throw ValidationException::withMessages([
+                        'payment_status' => 'This session does not require a payment proof.',
+                    ]);
+                }
+
+                if ($locked->status === SessionStatus::CANCELLED) {
+                    throw ValidationException::withMessages([
+                        'payment_status' => 'This session was cancelled.',
+                    ]);
+                }
+
+                if ($this->payments->hasOpenPaymentForSession($locked->id)) {
+                    throw ValidationException::withMessages([
+                        'payment' => 'A payment for this session is already under review.',
+                    ]);
+                }
+
+                return $this->createPayment(
+                    amount: (float) $locked->price,
+                    proofPath: $path,
+                    sessionId: $locked->id,
+                );
+            });
+        } catch (UniqueConstraintViolationException) {
+            Storage::disk($disk)->delete($path);
+            throw new ConflictException('A payment for this session is already under review.');
+        } catch (\Throwable $e) {
+            Storage::disk($disk)->delete($path);
+            throw $e;
         }
-
-        if ($this->payments->hasOpenPaymentForSession($session->id)) {
-            throw ValidationException::withMessages([
-                'payment' => 'A payment for this session is already under review.',
-            ]);
-        }
-
-        $path = $proof->store(
-            "payment-proofs/{$session->patient_id}",
-            ['disk' => config('sakina.uploads_disk', 'local')]
-        );
-
-        return $this->createPayment(
-            amount: (float) $session->price,
-            proofPath: $path,
-            sessionId: $session->id,
-        );
     }
 
     /**
      * Staff decision on a submitted proof.
      *   approve → payment approved; subscription activated OR session paid+confirmed.
      *   reject  → payment rejected; the patient may upload a new proof.
+     *
+     * The payment row is locked for the whole decision so two reviewers can
+     * never both succeed; the loser receives 409.
      */
     public function review(Payment $payment, User $reviewer, string $action, ?string $note): Payment
     {
-        if ($payment->status !== PaymentReviewStatus::PENDING) {
-            throw ValidationException::withMessages(['payment' => 'This payment was already reviewed.']);
-        }
-
         $approve = $action === 'approve';
 
-        DB::transaction(function () use ($payment, $reviewer, $approve, $note) {
-            $this->payments->update($payment, [
+        $payment = DB::transaction(function () use ($payment, $reviewer, $approve, $note) {
+            $locked = Payment::whereKey($payment->id)->lockForUpdate()->firstOrFail();
+
+            if ($locked->status !== PaymentReviewStatus::PENDING) {
+                throw new ConflictException('This payment was already reviewed.');
+            }
+
+            $this->payments->update($locked, [
                 'status' => $approve ? PaymentReviewStatus::APPROVED->value : PaymentReviewStatus::REJECTED->value,
                 'reviewer_id' => $reviewer->id,
+                'reviewed_at' => now(),
                 'note' => $note,
             ]);
 
-            if ($payment->subscription_id) {
-                $this->applyToSubscription($payment, $approve);
+            if ($locked->subscription_id) {
+                $this->applyToSubscription($locked, $approve);
             }
 
-            if ($payment->therapy_session_id && $approve) {
-                $this->sessionService->markPaidAndConfirmed($payment->session, $reviewer);
+            if ($locked->therapy_session_id) {
+                $session = TherapySession::whereKey($locked->therapy_session_id)->lockForUpdate()->firstOrFail();
+
+                if ($approve) {
+                    if ($session->status === SessionStatus::CANCELLED) {
+                        throw ValidationException::withMessages([
+                            'payment' => 'The session was cancelled; reject the payment instead.',
+                        ]);
+                    }
+
+                    $this->sessionService->markPaidAndConfirmed($session, $reviewer);
+                }
             }
+
+            $this->audit->record($reviewer, AuditLogService::PAYMENT_REVIEWED, $locked->id, [
+                'action' => $approve ? 'approve' : 'reject',
+                'note' => $note,
+                'subscription_id' => $locked->subscription_id,
+                'therapy_session_id' => $locked->therapy_session_id,
+            ]);
+
+            return $locked;
         });
 
         $this->notifications->paymentReviewed($payment->fresh(['subscription.patient.user', 'session.patient.user']));
@@ -111,7 +162,7 @@ class PaymentReviewService
 
     private function applyToSubscription(Payment $payment, bool $approved): void
     {
-        $subscription = $payment->subscription;
+        $subscription = Subscription::whereKey($payment->subscription_id)->lockForUpdate()->first();
 
         if (! $subscription) {
             return;
@@ -142,14 +193,20 @@ class PaymentReviewService
 
     public function toArray(Payment $payment): array
     {
+        $patient = $payment->subscription?->patient ?? $payment->session?->patient;
+
         return [
             'id' => $payment->id,
             'subscription_id' => $payment->subscription_id,
             'therapy_session_id' => $payment->therapy_session_id,
+            'patient_id' => $patient?->user_id,
+            'patient_name' => $patient?->full_name,
             'amount' => $payment->amount,
             'status' => $payment->status?->value,
             'note' => $payment->note,
             'reviewer_id' => $payment->reviewer_id,
+            'reviewed_at' => $payment->reviewed_at?->toISOString(),
+            'proof_file_path' => $payment->proof_file_path,
             'created_at' => $payment->created_at?->toISOString(),
         ];
     }
