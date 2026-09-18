@@ -8,10 +8,12 @@ use App\Exceptions\ConflictException;
 use App\Models\Patient;
 use App\Models\Therapist;
 use App\Models\TherapistSwitch;
+use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -44,6 +46,15 @@ class TherapistSwitchService
 
         if ($patient->therapist_id === $newTherapistId) {
             throw ValidationException::withMessages(['new_therapist_id' => 'This is already your therapist.']);
+        }
+
+        if ($this->hasSessionWithinLockWindow($patient)) {
+            throw ValidationException::withMessages([
+                'therapist' => sprintf(
+                    'You have a session with your current therapist within the next %d hours; request the switch after it.',
+                    $this->switchLockHours()
+                ),
+            ]);
         }
 
         $target = Therapist::whereKey($newTherapistId)->first();
@@ -83,6 +94,33 @@ class TherapistSwitchService
         ]);
 
         return $switch;
+    }
+
+    private function switchLockHours(): int
+    {
+        return (int) config('sakina.therapist_switch_lock_hours', 48);
+    }
+
+    /**
+     * A switch is not allowed while a live (pending/confirmed) session with
+     * the current therapist starts within the lock window.
+     */
+    private function hasSessionWithinLockWindow(Patient $patient): bool
+    {
+        $from = now();
+        $to = now()->addHours($this->switchLockHours());
+
+        return TherapySession::where('patient_id', $patient->user_id)
+            ->where('therapist_id', $patient->therapist_id)
+            ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+            ->whereDate('session_date', '>=', $from->toDateString())
+            ->whereDate('session_date', '<=', $to->toDateString())
+            ->get()
+            ->contains(function (TherapySession $session) use ($from, $to) {
+                $startsAt = Carbon::parse($session->session_date->toDateString().' '.substr((string) $session->session_time, 0, 5));
+
+                return $startsAt->between($from, $to);
+            });
     }
 
     public function decide(TherapistSwitch $switch, bool $approve, User $admin, ?string $note = null): TherapistSwitch

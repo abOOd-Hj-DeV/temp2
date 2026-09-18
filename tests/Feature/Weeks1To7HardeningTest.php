@@ -10,6 +10,7 @@ use App\Models\Payment;
 use App\Models\RedFlag;
 use App\Models\Subscription;
 use App\Models\Therapist;
+use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Services\Messaging\WhatsAppSenderInterface;
@@ -373,7 +374,8 @@ class Weeks1To7HardeningTest extends TestCase
             'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(),
             'price' => 150, 'verification_status' => 'approved',
         ]);
-        $this->bookAs($this->patientUser)->assertCreated();
+        // Far enough away not to trip the 48-hour switch lock.
+        $this->bookAs($this->patientUser, ['session_date' => now()->addDays(3)->toDateString()])->assertCreated();
 
         $targetUser = $this->makeUser('therapist', '+963900000170');
         $target = $this->makeTherapist($targetUser, 'approved');
@@ -394,6 +396,53 @@ class Weeks1To7HardeningTest extends TestCase
         Sanctum::actingAs($this->admin, ['*'], 'api');
         $this->postJson("/api/v1/admin/therapist-switches/{$switchId}/review", ['action' => 'approve'])->assertOk();
         $this->assertSame($target->user_id, $this->patient->refresh()->therapist_id);
+    }
+
+    public function test_therapist_switch_is_locked_while_a_session_is_within_48_hours(): void
+    {
+        Subscription::create([
+            'patient_id' => $this->patient->user_id, 'type' => '4_weeks',
+            'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(),
+            'price' => 150, 'verification_status' => 'approved',
+        ]);
+        $this->bookAs($this->patientUser)->assertCreated(); // tomorrow 10:00 => inside the window
+        $session = TherapySession::firstOrFail();
+
+        $targetUser = $this->makeUser('therapist', '+963900000171');
+        $target = $this->makeTherapist($targetUser, 'approved');
+        $payload = ['new_therapist_id' => $target->user_id, 'reason' => 'I would prefer a different approach.'];
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->postJson('/api/v1/therapist/switch', $payload)
+            ->assertUnprocessable()->assertJsonValidationErrorFor('therapist');
+        $this->assertSame(0, TherapistSwitch::count());
+
+        // A completed or cancelled session no longer locks the switch.
+        $session->update(['status' => 'completed']);
+        $this->postJson('/api/v1/therapist/switch', $payload)->assertStatus(202);
+    }
+
+    public function test_therapist_switch_lock_boundary_is_exactly_48_hours(): void
+    {
+        Subscription::create([
+            'patient_id' => $this->patient->user_id, 'type' => '4_weeks',
+            'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(),
+            'price' => 150, 'verification_status' => 'approved',
+        ]);
+        $this->travelTo(now()->setTime(9, 0));
+        $this->bookAs($this->patientUser, ['session_date' => now()->addDays(2)->toDateString(), 'session_time' => '10:00'])
+            ->assertCreated(); // starts in 49h
+
+        $targetUser = $this->makeUser('therapist', '+963900000172');
+        $target = $this->makeTherapist($targetUser, 'approved');
+        $payload = ['new_therapist_id' => $target->user_id, 'reason' => 'I would prefer a different approach.'];
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->postJson('/api/v1/therapist/switch', $payload)->assertStatus(202);
+        TherapistSwitch::query()->delete();
+
+        $this->travel(2)->hours(); // now starts in 47h
+        $this->postJson('/api/v1/therapist/switch', $payload)->assertUnprocessable();
     }
 
     // ------------------------------------------------------------ payments

@@ -54,6 +54,8 @@ return [
     // hourly cap on full personal-data exports.
     'access_token_ttl_minutes' => (int) env('SAKINA_ACCESS_TOKEN_TTL_MINUTES', 120),
     'refresh_token_ttl_days' => (int) env('SAKINA_REFRESH_TOKEN_TTL_DAYS', 30),
+    'therapist_switch_lock_hours' => (int) env('SAKINA_THERAPIST_SWITCH_LOCK_HOURS', 48),
+    'payment_review_sla_hours' => (int) env('SAKINA_PAYMENT_REVIEW_SLA_HOURS', 12),
     'api_rate_limit_per_minute' => (int) env('SAKINA_API_RATE_LIMIT_PER_MINUTE', 120),
     'export_rate_limit_per_hour' => (int) env('SAKINA_EXPORT_RATE_LIMIT_PER_HOUR', 3),
 

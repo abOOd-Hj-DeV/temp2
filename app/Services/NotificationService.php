@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Notifications\AssessmentCompletedNotification;
 use App\Notifications\PaymentProofPendingNotification;
 use App\Notifications\PaymentReviewedNotification;
+use App\Notifications\PaymentReviewOverdueNotification;
 use App\Notifications\RedFlagEscalatedNotification;
 use App\Notifications\RedFlagRaisedNotification;
 use App\Notifications\SessionBookedNotification;
@@ -117,6 +118,23 @@ class NotificationService
     {
         foreach ($reviewers as $reviewer) {
             $reviewer->notify(new PaymentProofPendingNotification($payment));
+        }
+    }
+
+    public function paymentReviewOverdue(Payment $payment, iterable $reviewers, int $pendingHours): void
+    {
+        foreach ($reviewers as $reviewer) {
+            $reviewer->notify(new PaymentReviewOverdueNotification($payment, $pendingHours));
+
+            $this->sendWhatsAppSafe(
+                $reviewer->whatsapp_number,
+                sprintf(
+                    'Sakina: a payment proof (ref %s) has been awaiting review for %d hours. Please review it.',
+                    substr($payment->id, 0, 8),
+                    $pendingHours
+                ),
+                ['payment_id' => $payment->id, 'reviewer_id' => $reviewer->id]
+            );
         }
     }
 
