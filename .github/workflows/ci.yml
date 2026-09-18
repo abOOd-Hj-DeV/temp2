@@ -64,6 +64,10 @@ jobs:
       DB_DATABASE: sakina_test
       DB_USERNAME: sakina
       DB_PASSWORD: sakina
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
+      UPLOADS_DISK: local
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
