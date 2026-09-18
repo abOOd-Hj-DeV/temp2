@@ -3,9 +3,7 @@
 namespace App\Http\Controllers\Api\V1\Admin;
 
 use App\Enums\RedFlagType;
-use App\Enums\UserRole;
 use App\Http\Controllers\Controller;
-use App\Models\User;
 use App\Services\AuditLogService;
 use App\Services\RedFlagService;
 use Illuminate\Http\JsonResponse;
@@ -55,19 +53,18 @@ class RedFlagController extends Controller
 
         $flag = $this->redFlags->find($id) ?? throw new NotFoundHttpException('Red flag not found.');
 
-        $assignee = User::whereKey($data['user_id'])
-            ->whereIn('role', [UserRole::ADMIN->value, UserRole::SUPER_ADMIN->value, UserRole::THERAPIST->value])
-            ->where('is_active', true)
-            ->first();
+        $assignee = $this->redFlags->resolveAssignee($flag, $data['user_id']);
 
         if (! $assignee) {
-            throw ValidationException::withMessages(['user_id' => 'Assignee must be an active staff member or therapist.']);
+            throw ValidationException::withMessages([
+                'user_id' => 'Assignee must be active clinical staff or an approved therapist treating this patient.',
+            ]);
         }
 
-        $this->redFlags->assignTo($flag->id, $assignee->id);
+        $flag = $this->redFlags->reassign($flag, $assignee);
         $this->audit->record($request->user(), AuditLogService::RED_FLAG_ASSIGNED, $flag->id, ['assigned_to' => $assignee->id]);
 
-        return response()->json(['message' => 'Red flag assigned.', 'data' => $this->redFlags->toArray($flag->refresh())]);
+        return response()->json(['message' => 'Red flag assigned.', 'data' => $this->redFlags->toArray($flag)]);
     }
 
     public function updateStatus(Request $request, string $id): JsonResponse

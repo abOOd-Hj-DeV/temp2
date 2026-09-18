@@ -22,7 +22,7 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
             ->whereUuid('sessionId')->name('post-session');
         Route::get('/programs', [PatientController::class, 'getPrograms'])->name('programs');
         Route::delete('/account', [PatientController::class, 'deleteAccount'])->name('account.delete');
-        Route::get('/export-data', [PatientController::class, 'exportData'])->name('data.export');
+        Route::get('/export-data', [PatientController::class, 'exportData'])->middleware('throttle:export')->name('data.export');
 
         Route::post('/assessment', [AssessmentController::class, 'store'])
             ->middleware('throttle:20,1')->name('assessment.store');

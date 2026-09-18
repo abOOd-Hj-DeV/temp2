@@ -93,19 +93,9 @@ class AuthService
     {
         $user = $this->users->findByWhatsapp($whatsappNumber);
 
-        if (! $user) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => __('This WhatsApp number is not registered.'),
-            ]);
-        }
-
-        if ($user->isVerified()) {
-            throw ValidationException::withMessages([
-                'otp' => __('Account is already verified. Please log in.'),
-            ]);
-        }
-
-        if (! $this->otp->verify($user, $code, OtpService::PURPOSE_REGISTRATION)) {
+        // One indistinguishable failure for unknown, already-verified and wrong-code
+        // cases so the endpoint cannot be used to enumerate accounts.
+        if (! $user || $user->isVerified() || ! $this->otp->verify($user, $code, OtpService::PURPOSE_REGISTRATION)) {
             throw ValidationException::withMessages([
                 'otp' => __('Invalid or expired verification code.'),
             ]);
@@ -129,28 +119,16 @@ class AuthService
     {
         $user = $this->users->findByWhatsapp($whatsappNumber);
 
-        if (! $user) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => __('This WhatsApp number is not registered.'),
-            ]);
+        if ($user && ! $user->isVerified()) {
+            if ($this->isUnverifiedExpired($user)) {
+                $this->users->delete($user);
+            } else {
+                $this->sendOtpQuietly($user, OtpService::PURPOSE_REGISTRATION);
+            }
         }
 
-        if ($user->isVerified()) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => __('Account is already verified. Please log in.'),
-            ]);
-        }
-
-        if ($this->isUnverifiedExpired($user)) {
-            $this->users->delete($user);
-            throw ValidationException::withMessages([
-                'whatsapp_number' => __('Verification period expired. Please register again.'),
-            ]);
-        }
-
-        $this->otp->send($user, OtpService::PURPOSE_REGISTRATION);
-
-        return ['message' => __('A new verification code was sent.')];
+        // Same response whether the number is unknown, verified, expired or on cooldown.
+        return ['message' => __('If this number is pending verification, a new code has been sent.')];
     }
 
     public function login(array $data): array
@@ -222,7 +200,7 @@ class AuthService
 
         // Do not reveal whether the number is registered.
         if ($user?->isVerified()) {
-            $this->otp->send($user, OtpService::PURPOSE_PASSWORD_RESET);
+            $this->sendOtpQuietly($user, OtpService::PURPOSE_PASSWORD_RESET);
         }
 
         return [
@@ -249,6 +227,19 @@ class AuthService
         Log::info('Password reset completed', ['user_id' => $user->id]);
 
         return ['message' => __('Password updated successfully.')];
+    }
+
+    /**
+     * Send an OTP without surfacing cooldown/provider errors to the caller;
+     * those responses would confirm the account exists.
+     */
+    private function sendOtpQuietly(User $user, string $purpose): void
+    {
+        try {
+            $this->otp->send($user, $purpose);
+        } catch (ValidationException $e) {
+            Log::info('OTP not sent', ['user_id' => $user->id, 'purpose' => $purpose, 'reason' => $e->getMessage()]);
+        }
     }
 
     private function issueToken(User $user): array

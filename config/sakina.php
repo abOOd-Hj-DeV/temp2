@@ -46,6 +46,15 @@ return [
     'mood_alert_threshold' => env('SAKINA_MOOD_ALERT_THRESHOLD', 3),
     'mood_alert_streak' => env('SAKINA_MOOD_ALERT_STREAK', 3),
 
+    // Minutes an open high-priority or unassigned red flag may wait before every
+    // active clinical staff member is alerted.
+    'red_flag_escalation_minutes' => (int) env('SAKINA_RED_FLAG_ESCALATION_MINUTES', 60),
+
+    // Global api/* request ceiling per authenticated user (or IP) and the
+    // hourly cap on full personal-data exports.
+    'api_rate_limit_per_minute' => (int) env('SAKINA_API_RATE_LIMIT_PER_MINUTE', 120),
+    'export_rate_limit_per_hour' => (int) env('SAKINA_EXPORT_RATE_LIMIT_PER_HOUR', 3),
+
     // Max bytes for non-multipart (JSON/form) request bodies. 0 disables.
     'max_json_body_bytes' => (int) env('SAKINA_MAX_JSON_BODY_BYTES', 262144),
 ];

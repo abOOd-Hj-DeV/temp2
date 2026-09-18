@@ -34,10 +34,10 @@ class Assessment extends Model
         $encryptedAnswers = [];
 
         foreach ($answers as $key => $value) {
-            // تشفير كل إجابة على حدة
+            // Ciphertext only: answers live in a 4-value domain, so any plaintext-derived
+            // digest stored alongside would be trivially reversible.
             $encryptedAnswers[$key] = [
                 'encrypted' => Crypt::encryptString((string) $value),
-                'hash' => hash('sha256', (string) $value),
             ];
         }
 
@@ -92,15 +92,7 @@ class Assessment extends Model
 
     public function verifyAnswer(string $questionKey, int $expectedValue): bool
     {
-        $encryptedData = json_decode($this->attributes['answers'] ?? '', true);
-
-        if (! isset($encryptedData[$questionKey])) {
-            return false;
-        }
-
-        $expectedHash = hash('sha256', (string) $expectedValue);
-
-        return hash_equals($encryptedData[$questionKey]['hash'], $expectedHash);
+        return $this->getAnswer($questionKey) === $expectedValue;
     }
 
     public function getEncryptedAnswersArray(): array
@@ -117,10 +109,7 @@ class Assessment extends Model
         }
 
         foreach ($answers as $key => $value) {
-            $expectedHash = hash('sha256', (string) $value);
-
-            if (! isset($encryptedData[$key]) ||
-                ! hash_equals($encryptedData[$key]['hash'], $expectedHash)) {
+            if (! isset($encryptedData[$key]) || $this->getAnswer($key) !== (int) $value) {
                 return false;
             }
         }

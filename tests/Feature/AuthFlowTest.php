@@ -174,6 +174,33 @@ class AuthFlowTest extends TestCase
         ])->assertOk();
     }
 
+    public function test_otp_endpoints_do_not_reveal_whether_a_number_is_registered(): void
+    {
+        $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertCreated();
+        $otp = $this->lastOtp();
+        $this->postJson('/api/v1/auth/otp/verify', ['whatsapp_number' => '+963900000001', 'otp' => $otp])->assertOk();
+
+        $unknown = $this->postJson('/api/v1/auth/otp/verify', ['whatsapp_number' => '+963900000999', 'otp' => '123456'])->assertStatus(422)->json();
+        $verified = $this->postJson('/api/v1/auth/otp/verify', ['whatsapp_number' => '+963900000001', 'otp' => '123456'])->assertStatus(422)->json();
+        $this->assertSame($unknown, $verified);
+
+        $this->travel(61)->seconds(); // unauthenticated throttle counter is shared per IP
+        $sentBefore = count($this->sender->messages);
+        $unknown = $this->postJson('/api/v1/auth/otp/resend', ['whatsapp_number' => '+963900000999'])->assertOk()->json();
+        $verified = $this->postJson('/api/v1/auth/otp/resend', ['whatsapp_number' => '+963900000001'])->assertOk()->json();
+        $this->assertSame($unknown, $verified);
+        $this->assertCount($sentBefore, $this->sender->messages);
+
+        // Pending account on resend cooldown: still the same 200 body, no second code.
+        $this->postJson('/api/v1/auth/register', $this->registerPayload(['whatsapp_number' => '+963900000002', 'email' => 'p2@example.com']))->assertCreated();
+        $this->travel(61)->seconds(); // clear the throttle window, then re-enter the OTP cooldown
+        $this->postJson('/api/v1/auth/otp/resend', ['whatsapp_number' => '+963900000002'])->assertOk();
+        $sentBefore = count($this->sender->messages);
+        $pending = $this->postJson('/api/v1/auth/otp/resend', ['whatsapp_number' => '+963900000002'])->assertOk()->json();
+        $this->assertSame($unknown, $pending);
+        $this->assertCount($sentBefore, $this->sender->messages);
+    }
+
     public function test_unverified_number_gets_fresh_otp_on_reregister(): void
     {
         $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertCreated();

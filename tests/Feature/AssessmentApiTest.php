@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Assessment;
 use App\Models\Patient;
 use App\Models\RedFlag;
 use App\Models\User;
@@ -139,7 +140,14 @@ class AssessmentApiTest extends TestCase
         // Question keys are structural; answer values must never be plaintext.
         $this->assertStringNotContainsString('"q1":1', (string) $raw);
         $this->assertStringContainsString('encrypted', (string) $raw);
-        $this->assertStringContainsString('hash', (string) $raw);
+        // No plaintext-derived digest may sit next to the ciphertext (4-value domain => trivially reversible).
+        $this->assertStringNotContainsString('hash', (string) $raw);
+        $this->assertStringNotContainsString(hash('sha256', '1'), (string) $raw);
+
+        $assessment = Assessment::sole();
+        $this->assertTrue($assessment->verifyAnswer('q1', 1));
+        $this->assertFalse($assessment->verifyAnswer('q1', 2));
+        $this->assertTrue($assessment->verifyAllAnswers($this->answers(9, 1)));
     }
 
     public function test_history_returns_paginated_assessments_with_stats(): void

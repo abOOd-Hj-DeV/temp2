@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\PaymentReviewStatus;
 use App\Enums\SessionStatus;
+use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\Assessment;
 use App\Models\Patient;
 use App\Models\Payment;
@@ -15,13 +16,13 @@ use App\Models\User;
 use App\Notifications\AssessmentCompletedNotification;
 use App\Notifications\PaymentProofPendingNotification;
 use App\Notifications\PaymentReviewedNotification;
+use App\Notifications\RedFlagEscalatedNotification;
 use App\Notifications\RedFlagRaisedNotification;
 use App\Notifications\SessionBookedNotification;
 use App\Notifications\SessionReminderNotification;
 use App\Notifications\SessionStatusChangedNotification;
 use App\Notifications\TherapistApprovalNotification;
 use App\Notifications\TherapistSwitchDecidedNotification;
-use App\Services\Messaging\WhatsAppSenderInterface;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -30,10 +31,6 @@ use Illuminate\Support\Facades\Log;
  */
 class NotificationService
 {
-    public function __construct(
-        private WhatsAppSenderInterface $whatsApp,
-    ) {}
-
     public function assessmentCompleted(Patient $patient, Assessment $assessment): void
     {
         $patient->user?->notify(new AssessmentCompletedNotification($assessment));
@@ -53,22 +50,39 @@ class NotificationService
 
         $assignee->notify(new RedFlagRaisedNotification($redFlag));
 
-        try {
-            $this->whatsApp->send(
-                $assignee->whatsapp_number,
+        // Message carries no patient identity: it goes through a third-party provider.
+        $this->sendWhatsAppSafe(
+            $assignee->whatsapp_number,
+            sprintf(
+                'Sakina alert: a %s red flag (%s priority) is awaiting your review. Ref %s.',
+                $redFlag->type->value,
+                $redFlag->priority->value,
+                substr($redFlag->id, 0, 8)
+            ),
+            ['red_flag_id' => $redFlag->id]
+        );
+    }
+
+    /**
+     * Alert every active clinical staff member that a flag has gone unhandled.
+     *
+     * @param  iterable<User>  $staff
+     */
+    public function redFlagEscalated(RedFlag $redFlag, iterable $staff): void
+    {
+        foreach ($staff as $user) {
+            $user->notify(new RedFlagEscalatedNotification($redFlag));
+
+            $this->sendWhatsAppSafe(
+                $user->whatsapp_number,
                 sprintf(
-                    'Sakina alert: a %s red flag (%s priority) was raised for patient %s. Please review.',
+                    'Sakina ESCALATION: %s red flag (%s priority) ref %s is still open and unhandled. Immediate review required.',
                     $redFlag->type->value,
                     $redFlag->priority->value,
-                    $redFlag->patient?->full_name ?? $redFlag->patient_id
-                )
+                    substr($redFlag->id, 0, 8)
+                ),
+                ['red_flag_id' => $redFlag->id, 'escalated_to' => $user->id]
             );
-        } catch (\Throwable $e) {
-            // WhatsApp delivery must never block clinical record creation.
-            Log::error('Red flag WhatsApp alert failed', [
-                'red_flag_id' => $redFlag->id,
-                'error' => $e->getMessage(),
-            ]);
         }
     }
 
@@ -165,6 +179,10 @@ class NotificationService
         );
     }
 
+    /**
+     * Queue a WhatsApp message (retried with backoff by the job). Enqueueing
+     * failures are logged so notification problems never abort the caller.
+     */
     private function sendWhatsAppSafe(?string $number, string $message, array $context = []): void
     {
         if (empty($number)) {
@@ -172,7 +190,7 @@ class NotificationService
         }
 
         try {
-            $this->whatsApp->send($number, $message);
+            SendWhatsAppMessageJob::dispatch($number, $message, $context);
         } catch (\Throwable $e) {
             Log::error('WhatsApp notification failed', $context + ['error' => $e->getMessage()]);
         }
