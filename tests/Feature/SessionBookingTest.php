@@ -192,6 +192,52 @@ class SessionBookingTest extends TestCase
         $this->assertFalse(TherapySession::startTimesOverlap('11:00', '10:00'));
     }
 
+    public function test_rescheduling_excludes_only_the_session_being_moved(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $id = $this->book()->assertCreated()->json('session.id');
+        $day = strtolower(now()->addDay()->format('l'));
+        $this->therapist->update(['availability' => [$day => ['09:30-12:30']]]);
+
+        $this->postJson("/api/v1/sessions/{$id}/reschedule", [
+            'session_date' => $this->date, 'session_time' => '10:30',
+        ])->assertAccepted();
+        $this->assertSame('10:00', substr(TherapySession::findOrFail($id)->session_time, 0, 5));
+        $this->getJson("/api/v1/therapists/{$this->therapist->user_id}/slots?date={$this->date}")
+            ->assertOk()->assertJsonPath('slots', ['11:30']);
+
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/reschedule/decide", ['action' => 'approve'])->assertOk();
+        $this->assertSame('10:30', substr(TherapySession::findOrFail($id)->session_time, 0, 5));
+        $this->assertDatabaseCount('therapy_sessions', 1);
+    }
+
+    public function test_reschedule_approval_rechecks_conflicts_with_new_bookings(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $id = $this->book()->assertCreated()->json('session.id');
+        $day = strtolower(now()->addDay()->format('l'));
+        $this->therapist->update(['availability' => [$day => ['10:30-13:30']]]);
+        $this->postJson("/api/v1/sessions/{$id}/reschedule", [
+            'session_date' => $this->date, 'session_time' => '10:30',
+        ])->assertAccepted();
+
+        $this->therapist->update(['availability' => [$day => ['11:00-14:00']]]);
+        $other = $this->makeUser('patient', '+963900000090');
+        Patient::create([
+            'user_id' => $other->id, 'full_name' => 'Another patient',
+            'age' => 30, 'gender' => 'other', 'language' => 'en',
+        ]);
+        Sanctum::actingAs($other, ['*'], 'api');
+        $otherId = $this->book(['session_time' => '11:00'])->assertCreated()->json('session.id');
+
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/reschedule/decide", ['action' => 'approve'])
+            ->assertUnprocessable()->assertJsonValidationErrorFor('session_time');
+        $this->assertSame('10:00', substr(TherapySession::findOrFail($id)->session_time, 0, 5));
+        $this->assertSame('11:00', substr(TherapySession::findOrFail($otherId)->session_time, 0, 5));
+    }
+
     public function test_booking_outside_availability_is_rejected(): void
     {
         Sanctum::actingAs($this->patientUser, ['*'], 'api');

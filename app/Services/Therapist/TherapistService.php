@@ -57,7 +57,7 @@ class TherapistService
      *
      * @return array<int, string> e.g. ['09:00','10:00']
      */
-    public function availableSlots(Therapist $therapist, Carbon $date): array
+    public function availableSlots(Therapist $therapist, Carbon $date, ?string $excludeSessionId = null): array
     {
         $day = strtolower($date->format('l'));
         $windows = $therapist->availability[$day] ?? [];
@@ -66,8 +66,8 @@ class TherapistService
             return [];
         }
 
-        $duration = (int) config('sakina.session_duration_minutes', 60);
-        $booked = $this->sessions->bookedTimesFor($therapist->user_id, $date->toDateString());
+        $duration = TherapySession::durationMinutes();
+        $booked = $this->sessions->bookedTimesFor($therapist->user_id, $date->toDateString(), $excludeSessionId);
         $now = now();
         $slots = [];
 
@@ -101,9 +101,9 @@ class TherapistService
         return $slots;
     }
 
-    public function isSlotAvailable(Therapist $therapist, Carbon $date, string $time): bool
+    public function isSlotAvailable(Therapist $therapist, Carbon $date, string $time, ?string $excludeSessionId = null): bool
     {
-        return in_array(substr($time, 0, 5), $this->availableSlots($therapist, $date), true);
+        return in_array(substr($time, 0, 5), $this->availableSlots($therapist, $date, $excludeSessionId), true);
     }
 
     /**

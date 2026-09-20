@@ -23,8 +23,8 @@ use Illuminate\Support\Str;
  * is cleared outright; the scores stay.
  *
  * Files the person uploaded (payment proofs, licence documents) are removed
- * from the uploads disk inside the same transaction, so a storage failure
- * rolls the erasure back and the account is retried on the next run.
+ * from the uploads disk. A storage failure rolls back the database changes;
+ * retries skip files that have already been removed.
  */
 class AccountAnonymizer
 {

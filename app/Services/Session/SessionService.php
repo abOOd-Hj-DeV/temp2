@@ -284,11 +284,11 @@ class SessionService
 
             $therapist = Therapist::whereKey($locked->therapist_id)->firstOrFail();
 
-            if (! $this->therapistService->isSlotAvailable($therapist, $date, $time)) {
+            if (! $this->therapistService->isSlotAvailable($therapist, $date, $time, $locked->id)) {
                 throw ValidationException::withMessages(['session_time' => 'The requested slot is not available.']);
             }
 
-            if ($this->sessions->hasConflict($therapist->user_id, $date->toDateString(), $time)) {
+            if ($this->sessions->hasConflict($therapist->user_id, $date->toDateString(), $time, $locked->id)) {
                 throw ValidationException::withMessages(['session_time' => 'The requested slot is already taken.']);
             }
 
@@ -340,7 +340,7 @@ class SessionService
                 ];
 
                 if ($approve) {
-                    if ($this->sessions->hasConflict($locked->therapist_id, $newDate, $newTime)) {
+                    if ($this->sessions->hasConflict($locked->therapist_id, $newDate, $newTime, $locked->id)) {
                         throw ValidationException::withMessages(['session_time' => 'The requested slot is no longer free.']);
                     }
 

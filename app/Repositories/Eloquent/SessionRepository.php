@@ -43,10 +43,11 @@ class SessionRepository implements SessionRepositoryInterface
             ->paginate($perPage);
     }
 
-    public function bookedTimesFor(string $therapistId, string $date): array
+    public function bookedTimesFor(string $therapistId, string $date, ?string $excludeSessionId = null): array
     {
         return TherapySession::where('therapist_id', $therapistId)
             ->whereDate('session_date', $date)
+            ->when($excludeSessionId !== null, fn ($query) => $query->where('id', '!=', $excludeSessionId))
             ->whereIn('status', [
                 SessionStatus::PENDING->value,
                 SessionStatus::CONFIRMED->value,
@@ -72,11 +73,11 @@ class SessionRepository implements SessionRepositoryInterface
             ->count();
     }
 
-    public function hasConflict(string $therapistId, string $date, string $time): bool
+    public function hasConflict(string $therapistId, string $date, string $time, ?string $excludeSessionId = null): bool
     {
         $time = substr($time, 0, 5);
 
-        foreach ($this->bookedTimesFor($therapistId, $date) as $booked) {
+        foreach ($this->bookedTimesFor($therapistId, $date, $excludeSessionId) as $booked) {
             if (TherapySession::startTimesOverlap($booked, $time)) {
                 return true;
             }

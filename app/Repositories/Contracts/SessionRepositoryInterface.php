@@ -24,7 +24,7 @@ interface SessionRepositoryInterface
      *
      * @return array<string> times as H:i:s
      */
-    public function bookedTimesFor(string $therapistId, string $date): array;
+    public function bookedTimesFor(string $therapistId, string $date, ?string $excludeSessionId = null): array;
 
     /**
      * Count of sessions a patient has that were never cancelled — used to
@@ -40,7 +40,7 @@ interface SessionRepositoryInterface
      * interval [time, time + session duration). Adjacent sessions do not
      * conflict.
      */
-    public function hasConflict(string $therapistId, string $date, string $time): bool;
+    public function hasConflict(string $therapistId, string $date, string $time, ?string $excludeSessionId = null): bool;
 
     /** Patient already holds a non-cancelled session overlapping this date/time interval. */
     public function hasActiveSessionAt(string $patientId, string $date, string $time): bool;
