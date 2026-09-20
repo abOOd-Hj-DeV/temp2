@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\UserRole;
+use App\Http\Controllers\Api\V1\Admin\PackageController;
 use App\Http\Controllers\Api\V1\Admin\PaymentReviewController;
 use App\Http\Controllers\Api\V1\Admin\RedFlagController;
 use App\Http\Controllers\Api\V1\Admin\TherapistApprovalController;
@@ -30,11 +31,11 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
     Route::middleware("role:{$financeRoles}")->group(function () {
         Route::get('/payments', [PaymentReviewController::class, 'pending']);
         Route::post('/payments/{payment}/review', [PaymentReviewController::class, 'review'])
-            ->whereUuid('payment');
+            ->whereUuid('payment')->middleware('idempotent');
 
         Route::get('/withdrawals', [WithdrawalReviewController::class, 'index']);
         Route::post('/withdrawals/{withdrawal}/review', [WithdrawalReviewController::class, 'review'])
-            ->whereUuid('withdrawal');
+            ->whereUuid('withdrawal')->middleware('idempotent');
     });
 
     Route::middleware("role:{$staffRoles}")->group(function () {
@@ -46,9 +47,22 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
         Route::put('/therapists/{id}/clients-limit', [TherapistApprovalController::class, 'updateLimit'])
             ->whereUuid('id');
 
+    });
+
+    // Head Master (clinical_supervisor) owns the package catalogue.
+    Route::middleware("role:{$clinicalRoles}")->group(function () {
+        Route::get('/packages', [PackageController::class, 'index']);
+        Route::post('/packages', [PackageController::class, 'store'])->middleware('idempotent');
+        Route::put('/packages/{package}', [PackageController::class, 'update'])->whereUuid('package');
+        Route::post('/packages/{package}/publish', [PackageController::class, 'publish'])->whereUuid('package');
+        Route::post('/packages/{package}/unpublish', [PackageController::class, 'unpublish'])->whereUuid('package');
+    });
+
+    // Head Master (clinical_supervisor) gives the final word on therapist switches.
+    Route::middleware("role:{$clinicalRoles}")->group(function () {
         Route::get('/therapist-switches', [TherapistSwitchReviewController::class, 'index']);
         Route::post('/therapist-switches/{switch}/review', [TherapistSwitchReviewController::class, 'review'])
-            ->whereUuid('switch');
+            ->whereUuid('switch')->middleware('idempotent');
     });
 
     Route::middleware("role:{$clinicalRoles}")->group(function () {

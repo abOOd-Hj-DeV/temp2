@@ -31,7 +31,25 @@ class AuditLogService
 
     public const THERAPIST_SWITCH_REQUESTED = 'therapist_switch.requested';
 
+    public const THERAPIST_SWITCH_THERAPIST_DECIDED = 'therapist_switch.therapist_decided';
+
     public const THERAPIST_SWITCH_DECIDED = 'therapist_switch.decided';
+
+    public const SESSION_RESCHEDULE_REQUESTED = 'session.reschedule_requested';
+
+    public const SESSION_RESCHEDULE_DECIDED = 'session.reschedule_decided';
+
+    public const SESSION_ATTENDANCE_CONFIRMED = 'session.attendance_confirmed';
+
+    public const SESSION_REPORT_REVISED = 'session.report_revised';
+
+    public const PACKAGE_CREATED = 'package.created';
+
+    public const PACKAGE_UPDATED = 'package.updated';
+
+    public const PACKAGE_PUBLISHED = 'package.published';
+
+    public const PACKAGE_UNPUBLISHED = 'package.unpublished';
 
     public const WITHDRAWAL_REQUESTED = 'withdrawal.requested';
 

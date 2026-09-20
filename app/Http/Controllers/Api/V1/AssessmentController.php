@@ -24,7 +24,7 @@ class AssessmentController extends Controller
 
     public function history(Request $request): JsonResponse
     {
-        $perPage = min((int) $request->input('per_page', 10), 50);
+        $perPage = $this->perPage($request, 10);
 
         return response()->json(
             $this->assessments->getHistory($request->user(), $perPage)

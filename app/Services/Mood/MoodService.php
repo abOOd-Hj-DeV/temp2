@@ -126,14 +126,22 @@ class MoodService
         return true;
     }
 
+    /** Today or yesterday — anything older is history, not a live signal. */
+    private function isCurrent(Carbon|string $date): bool
+    {
+        return Carbon::parse($date)->startOfDay()->greaterThanOrEqualTo(now()->startOfDay()->subDay());
+    }
+
     /**
      * Length of the run of low scores on strictly consecutive calendar days
-     * ending at the most recent entry. A missed day breaks the run.
+     * ending today or yesterday. A missed day breaks the run; a run that
+     * ended in the past counts as 0.
      */
     private function lowStreak(Patient $patient): int
     {
         $threshold = (int) config('sakina.mood_alert_threshold', 3);
         $recent = MoodLog::where('patient_id', $patient->user_id)
+            ->whereDate('log_date', '<=', now()->toDateString())
             ->orderByDesc('log_date')
             ->limit(14)
             ->get();
@@ -143,6 +151,10 @@ class MoodService
 
         foreach ($recent as $entry) {
             $date = Carbon::parse($entry->log_date)->startOfDay();
+
+            if ($expected === null && ! $this->isCurrent($date)) {
+                break;
+            }
 
             if ($entry->score > $threshold || ($expected !== null && ! $date->equalTo($expected))) {
                 break;

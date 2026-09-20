@@ -34,10 +34,28 @@ class SecureFileService
         return [
             'path' => $path,
             'purpose' => $purpose,
-            'original_name' => $file->getClientOriginalName(),
+            'original_name' => self::safeOriginalName($file->getClientOriginalName()),
             'mime_type' => $file->getClientMimeType(),
             'size' => $file->getSize(),
         ];
+    }
+
+    /**
+     * Client-supplied filenames are metadata only (storage names are generated);
+     * strip directory components, control characters and cap the length so the
+     * value is safe to echo back or log.
+     */
+    public static function safeOriginalName(string $name): string
+    {
+        $name = basename(str_replace('\\', '/', $name));
+        $name = preg_replace('/[\x00-\x1F\x7F]/u', '', $name) ?? '';
+        $name = trim($name, ' .');
+
+        if ($name === '' || ! mb_check_encoding($name, 'UTF-8')) {
+            return 'upload';
+        }
+
+        return mb_substr($name, 0, 120);
     }
 
     /**

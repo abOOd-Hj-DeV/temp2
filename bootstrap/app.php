@@ -4,6 +4,7 @@ use App\Http\Middleware\CheckRole;
 use App\Http\Middleware\CheckUserStatus;
 use App\Http\Middleware\EnsureTherapistApproved;
 use App\Http\Middleware\ForceJsonResponse;
+use App\Http\Middleware\IdempotencyKey;
 use App\Http\Middleware\LimitJsonBodySize;
 use App\Http\Middleware\SecurityHeaders;
 use App\Jobs\CleanupUnverifiedUsersJob;
@@ -12,10 +13,13 @@ use App\Jobs\EscalateStaleRedFlagsJob;
 use App\Jobs\PruneScheduledDeletionsJob;
 use App\Jobs\RemindStalePaymentReviewsJob;
 use App\Jobs\SendSessionRemindersJob;
+use App\Models\IdempotencyKey as StoredIdempotencyKey;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+use League\Flysystem\FilesystemException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -36,6 +40,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'role' => CheckRole::class,
             'status' => CheckUserStatus::class,
             'therapist.approved' => EnsureTherapistApproved::class,
+            'idempotent' => IdempotencyKey::class,
         ]);
     })
     ->withSchedule(function (Schedule $schedule): void {
@@ -51,7 +56,17 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->job(new RemindStalePaymentReviewsJob)->hourly();
         // Weekly engagement snapshot (mood check-ins + module completion).
         $schedule->job(new ComputeWeeklyComplianceJob)->weeklyOn(1, '03:00');
+        $schedule->call(fn () => StoredIdempotencyKey::where('expires_at', '<', now())->delete())
+            ->daily()->name('prune-idempotency-keys');
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // Infrastructure outages (Redis cache/limiter/queue, object storage) must
+        // surface as a controlled 503 rather than a 500 that leaks connection details.
+        $exceptions->render(function (RedisException|FilesystemException $e, Request $request) {
+            report($e);
+
+            return response()->json(['message' => 'Service temporarily unavailable. Please retry shortly.'], 503, [
+                'Retry-After' => '5',
+            ]);
+        });
     })->create();

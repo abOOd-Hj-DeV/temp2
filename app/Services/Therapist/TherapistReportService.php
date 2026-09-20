@@ -27,6 +27,7 @@ class TherapistReportService
 
         $completedPaid = (clone $base)
             ->where('status', SessionStatus::COMPLETED->value)
+            ->whereNotNull('attendance_confirmed_at')
             ->where('payment_status', PaymentStatus::PAID->value);
 
         $perDay = (clone $base)

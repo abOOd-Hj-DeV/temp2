@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\V1\Subscription\StoreSubscriptionRequest;
+use App\Models\Package;
+use App\Services\Package\PackageService;
 use App\Services\Subscription\SubscriptionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,14 +14,23 @@ class SubscriptionController extends Controller
 {
     public function __construct(
         private SubscriptionService $subscriptionService,
+        private PackageService $packages,
     ) {}
+
+    /** Published packages a patient may buy. */
+    public function packages(): JsonResponse
+    {
+        return response()->json([
+            'data' => $this->packages->published()->map(fn (Package $p) => $this->packages->toArray($p)),
+        ]);
+    }
 
     /**
      * Patient's subscription history.
      */
     public function index(Request $request): JsonResponse
     {
-        $subscriptions = $this->subscriptionService->history($request->user()->patient);
+        $subscriptions = $this->subscriptionService->history($this->patientOf($request));
 
         return response()->json([
             'data' => $subscriptions->map(fn ($s) => $this->subscriptionService->toArray($s)),
@@ -31,7 +42,7 @@ class SubscriptionController extends Controller
      */
     public function current(Request $request): JsonResponse
     {
-        $subscription = $this->subscriptionService->current($request->user()->patient);
+        $subscription = $this->subscriptionService->current($this->patientOf($request));
 
         return response()->json([
             'data' => $subscription ? $this->subscriptionService->toArray($subscription) : null,
@@ -45,8 +56,8 @@ class SubscriptionController extends Controller
     public function store(StoreSubscriptionRequest $request): JsonResponse
     {
         $result = $this->subscriptionService->createWithProof(
-            $request->user()->patient,
-            $request->input('type'),
+            $this->patientOf($request),
+            (string) ($request->input('package_id') ?: $request->input('type')),
             $request->file('proof')
         );
 

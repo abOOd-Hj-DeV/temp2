@@ -59,6 +59,9 @@ return [
     'api_rate_limit_per_minute' => (int) env('SAKINA_API_RATE_LIMIT_PER_MINUTE', 120),
     'export_rate_limit_per_hour' => (int) env('SAKINA_EXPORT_RATE_LIMIT_PER_HOUR', 3),
 
+    // Hard ceiling for ?per_page on every paginated endpoint.
+    'max_per_page' => (int) env('SAKINA_MAX_PER_PAGE', 100),
+
     // Max bytes for non-multipart (JSON/form) request bodies. 0 disables.
     'max_json_body_bytes' => (int) env('SAKINA_MAX_JSON_BODY_BYTES', 262144),
 ];

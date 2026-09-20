@@ -18,7 +18,7 @@ class WithdrawalReviewController extends Controller
 
         $paginator = WalletWithdrawal::where('status', $request->input('status', WalletWithdrawal::STATUS_PENDING))
             ->orderBy('created_at')
-            ->paginate((int) $request->input('per_page', 15));
+            ->paginate($this->perPage($request));
 
         return response()->json([
             'data' => collect($paginator->items())->map(fn ($w) => $this->wallet->withdrawalToArray($w)),

@@ -2,7 +2,6 @@
 
 namespace App\Models;
 
-use App\Enums\SubscriptionType;
 use App\Traits\HasUUID;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -14,12 +13,14 @@ class Subscription extends Model
     use HasFactory, HasUUID;
 
     protected $fillable = [
-        'patient_id', 'type', 'start_date', 'end_date',
-        'price', 'payment_proof_path', 'verification_status', 'content',
+        'patient_id', 'type', 'package_id', 'sessions_total', 'duration_days', 'daily_sessions_quota',
+        'start_date', 'end_date', 'price', 'payment_proof_path', 'verification_status', 'content',
     ];
 
     protected $casts = [
-        'type' => SubscriptionType::class,
+        'sessions_total' => 'integer',
+        'duration_days' => 'integer',
+        'daily_sessions_quota' => 'integer',
         'start_date' => 'date',
         'end_date' => 'date',
         'price' => 'decimal:2',
@@ -29,6 +30,11 @@ class Subscription extends Model
     public function patient(): BelongsTo
     {
         return $this->belongsTo(Patient::class, 'patient_id', 'user_id');
+    }
+
+    public function package(): BelongsTo
+    {
+        return $this->belongsTo(Package::class, 'package_id');
     }
 
     public function payments(): HasMany

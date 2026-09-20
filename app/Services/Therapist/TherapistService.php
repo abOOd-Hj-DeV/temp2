@@ -195,8 +195,14 @@ class TherapistService
                 throw ValidationException::withMessages(['therapist' => 'Therapist not found.']);
             }
 
-            if ($therapist->approval_status === $status) {
-                throw new ConflictException("Therapist is already {$status->value}.");
+            // pending → approved | rejected is the only legal transition: a second
+            // reviewer racing on the same application sees 409, not a flip.
+            if ($therapist->approval_status === null) {
+                throw ValidationException::withMessages(['therapist' => 'Therapist has not submitted an approval request.']);
+            }
+
+            if ($therapist->approval_status !== ApprovalStatus::PENDING) {
+                throw new ConflictException("Therapist is already {$therapist->approval_status->value}.");
             }
 
             if ($status === ApprovalStatus::APPROVED && ! $therapist->license_file_path) {

@@ -12,6 +12,10 @@ class RegisterRequest extends FormRequest
         if (is_string($this->input('whatsapp_number'))) {
             $this->merge(['whatsapp_number' => PhoneNumber::normalize($this->input('whatsapp_number')) ?? $this->input('whatsapp_number')]);
         }
+
+        if (is_string($this->input('email'))) {
+            $this->merge(['email' => mb_strtolower(trim($this->input('email')))]);
+        }
     }
 
     public function authorize(): bool

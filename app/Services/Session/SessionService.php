@@ -8,6 +8,7 @@ use App\Enums\SessionStatus;
 use App\Enums\UserRole;
 use App\Exceptions\ConflictException;
 use App\Models\Patient;
+use App\Models\Subscription;
 use App\Models\Therapist;
 use App\Models\TherapySession;
 use App\Models\User;
@@ -16,6 +17,7 @@ use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
 use App\Services\Therapist\TherapistService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
@@ -73,8 +75,13 @@ class SessionService
                 }
 
                 $isInitial = ! $this->sessions->hasUsedInitialSession($patient->user_id);
-                $hasActiveSubscription = $this->subscriptions->activeForPatient($patient->user_id) !== null;
+                $subscription = $this->subscriptions->activeForPatient($patient->user_id);
+                $hasActiveSubscription = $subscription !== null;
                 $isFree = $isInitial && $hasActiveSubscription;
+
+                if ($subscription !== null) {
+                    $this->assertWithinPackageQuota($patient, $subscription, $date);
+                }
 
                 $session = $this->sessions->create([
                     'patient_id' => $patient->user_id,
@@ -156,14 +163,58 @@ class SessionService
             throw ValidationException::withMessages(['status' => 'A session cannot be completed before it starts.']);
         }
 
+        if ($session->attendance_confirmed_at === null) {
+            throw ValidationException::withMessages([
+                'attendance' => 'The patient (or a supervisor) must confirm attendance before the session can be completed.',
+            ]);
+        }
+
         return $this->transition($session, SessionStatus::COMPLETED, $actor, [SessionStatus::CONFIRMED], [
             'summary' => $summary,
         ]);
     }
 
     /**
+     * The patient (or, in a dispute, a clinical supervisor/admin) confirms the
+     * session actually took place. Completion — and therefore therapist
+     * earnings — is impossible without it.
+     */
+    public function confirmAttendance(TherapySession $session, User $actor): TherapySession
+    {
+        $isStaff = in_array($actor->role, [UserRole::ADMIN, UserRole::SUPER_ADMIN, UserRole::CLINICAL_SUPERVISOR], true);
+
+        if (! $isStaff && $actor->id !== $session->patient_id) {
+            throw new AuthorizationException('Only the patient of this session can confirm attendance.');
+        }
+
+        if ($this->startsAt($session)->isFuture()) {
+            throw ValidationException::withMessages(['attendance' => 'Attendance can only be confirmed after the session starts.']);
+        }
+
+        return DB::transaction(function () use ($session, $actor, $isStaff) {
+            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+
+            if ($locked->status !== SessionStatus::CONFIRMED) {
+                throw new ConflictException(sprintf('Attendance cannot be confirmed for a %s session.', $locked->status->value));
+            }
+
+            if ($locked->attendance_confirmed_at !== null) {
+                throw new ConflictException('Attendance was already confirmed.');
+            }
+
+            $this->sessions->update($locked, ['attendance_confirmed_at' => now()]);
+
+            $this->audit->record($actor, AuditLogService::SESSION_ATTENDANCE_CONFIRMED, $locked->id, [
+                'by_staff' => $isStaff,
+            ]);
+
+            return $locked->refresh();
+        });
+    }
+
+    /**
      * Therapist writes the post-session report. Completes the session when
-     * it is still confirmed; otherwise just updates the summary.
+     * it is still confirmed; otherwise records an audited revision.
      */
     public function report(TherapySession $session, User $actor, string $summary): TherapySession
     {
@@ -177,9 +228,137 @@ class SessionService
             throw ValidationException::withMessages(['status' => 'Reports can only be written for confirmed or completed sessions.']);
         }
 
-        $this->sessions->update($session, ['summary' => $summary]);
+        return DB::transaction(function () use ($session, $actor, $summary) {
+            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+            $revision = $locked->report_revision + 1;
 
-        return $session->refresh();
+            $this->sessions->update($locked, ['summary' => $summary, 'report_revision' => $revision]);
+
+            $this->audit->record($actor, AuditLogService::SESSION_REPORT_REVISED, $locked->id, [
+                'revision' => $revision,
+                'previous_sha256' => $locked->summary === null ? null : hash('sha256', $locked->summary),
+                'new_sha256' => hash('sha256', $summary),
+            ]);
+
+            return $locked->refresh();
+        });
+    }
+
+    /**
+     * Patient asks to move a pending/confirmed session. Nothing changes until
+     * the therapist approves; the current slot stays reserved meanwhile.
+     */
+    public function requestReschedule(TherapySession $session, User $actor, string $date, string $time): TherapySession
+    {
+        if ($actor->id !== $session->patient_id) {
+            throw new AuthorizationException('Only the patient of this session can request a reschedule.');
+        }
+
+        $this->assertCancellable($session);
+
+        $date = Carbon::parse($date)->startOfDay();
+        $time = substr($time, 0, 5);
+
+        if ($date->isPast() && ! $date->isToday()) {
+            throw ValidationException::withMessages(['session_date' => 'The new date must be in the future.']);
+        }
+
+        $fresh = DB::transaction(function () use ($session, $actor, $date, $time) {
+            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+
+            if (! in_array($locked->status, [SessionStatus::PENDING, SessionStatus::CONFIRMED], true)) {
+                throw new ConflictException(sprintf('A %s session cannot be rescheduled.', $locked->status->value));
+            }
+
+            if ($locked->reschedule_date !== null) {
+                throw new ConflictException('A reschedule request is already awaiting the therapist.');
+            }
+
+            $therapist = Therapist::whereKey($locked->therapist_id)->firstOrFail();
+
+            if (! $this->therapistService->isSlotAvailable($therapist, $date, $time)) {
+                throw ValidationException::withMessages(['session_time' => 'The requested slot is not available.']);
+            }
+
+            if ($this->sessions->hasConflict($therapist->user_id, $date->toDateString(), $time)) {
+                throw ValidationException::withMessages(['session_time' => 'The requested slot is already taken.']);
+            }
+
+            $this->sessions->update($locked, [
+                'reschedule_date' => $date->toDateString(),
+                'reschedule_time' => $time,
+                'reschedule_requested_by' => $actor->id,
+                'reschedule_requested_at' => now(),
+            ]);
+
+            $this->audit->record($actor, AuditLogService::SESSION_RESCHEDULE_REQUESTED, $locked->id, [
+                'to_date' => $date->toDateString(), 'to_time' => $time,
+            ]);
+
+            return $locked->fresh(['patient.user', 'therapist.user']);
+        });
+
+        $this->notifications->sessionRescheduleRequested($fresh, $fresh->therapist->user);
+
+        return $fresh;
+    }
+
+    /**
+     * Therapist approves (moves the session under the therapist row lock; the
+     * active-slot unique index is the final arbiter) or rejects the request.
+     */
+    public function decideReschedule(TherapySession $session, User $actor, bool $approve): TherapySession
+    {
+        $this->assertOwner($session, $actor);
+
+        try {
+            $fresh = DB::transaction(function () use ($session, $actor, $approve) {
+                Therapist::whereKey($session->therapist_id)->lockForUpdate()->firstOrFail();
+                $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+
+                if ($locked->reschedule_date === null) {
+                    throw new ConflictException('There is no pending reschedule request for this session.');
+                }
+
+                if (! in_array($locked->status, [SessionStatus::PENDING, SessionStatus::CONFIRMED], true)) {
+                    throw new ConflictException(sprintf('A %s session cannot be rescheduled.', $locked->status->value));
+                }
+
+                $newDate = $locked->reschedule_date->toDateString();
+                $newTime = substr((string) $locked->reschedule_time, 0, 5);
+                $clear = [
+                    'reschedule_date' => null, 'reschedule_time' => null,
+                    'reschedule_requested_by' => null, 'reschedule_requested_at' => null,
+                ];
+
+                if ($approve) {
+                    if ($this->sessions->hasConflict($locked->therapist_id, $newDate, $newTime)) {
+                        throw ValidationException::withMessages(['session_time' => 'The requested slot is no longer free.']);
+                    }
+
+                    $this->sessions->update($locked, $clear + [
+                        'session_date' => $newDate,
+                        'session_time' => $newTime,
+                        'reminder_sent' => false,
+                        'reminder_1h_sent' => false,
+                    ]);
+                } else {
+                    $this->sessions->update($locked, $clear);
+                }
+
+                $this->audit->record($actor, AuditLogService::SESSION_RESCHEDULE_DECIDED, $locked->id, [
+                    'approved' => $approve, 'to_date' => $newDate, 'to_time' => $newTime,
+                ]);
+
+                return $locked->fresh(['patient.user', 'therapist.user']);
+            });
+        } catch (UniqueConstraintViolationException) {
+            throw new ConflictException('The requested slot was just booked by someone else.');
+        }
+
+        $this->notifications->sessionRescheduleDecided($fresh, $approve);
+
+        return $fresh;
     }
 
     /**
@@ -282,6 +461,32 @@ class SessionService
         ]);
     }
 
+    /**
+     * Package limits frozen on the subscription at purchase: total sessions
+     * over its term and sessions per calendar day.
+     */
+    private function assertWithinPackageQuota(Patient $patient, Subscription $subscription, Carbon $date): void
+    {
+        $from = $subscription->start_date?->toDateString() ?? $date->toDateString();
+        $to = $subscription->end_date?->toDateString() ?? $date->toDateString();
+
+        if ($subscription->sessions_total !== null
+            && $this->sessions->countNonCancelledForPatientInRange($patient->user_id, $from, $to) >= $subscription->sessions_total) {
+            throw ValidationException::withMessages([
+                'subscription' => "Your package's {$subscription->sessions_total} sessions are all booked.",
+            ]);
+        }
+
+        $daily = $subscription->daily_sessions_quota ?? 1;
+        $day = $date->toDateString();
+
+        if ($this->sessions->countNonCancelledForPatientInRange($patient->user_id, $day, $day) >= $daily) {
+            throw ValidationException::withMessages([
+                'session_date' => "Your package allows {$daily} session(s) per day.",
+            ]);
+        }
+    }
+
     private function assertOwner(TherapySession $session, User $actor): void
     {
         if ($actor->id !== $session->therapist_id) {
@@ -346,6 +551,13 @@ class SessionService
             'payment_status' => $session->payment_status?->value,
             'link' => $session->link,
             'summary' => $session->summary,
+            'report_revision' => $session->report_revision,
+            'attendance_confirmed_at' => $session->attendance_confirmed_at?->toISOString(),
+            'reschedule' => $session->reschedule_date === null ? null : [
+                'date' => $session->reschedule_date->toDateString(),
+                'time' => substr((string) $session->reschedule_time, 0, 5),
+                'requested_at' => $session->reschedule_requested_at?->toISOString(),
+            ],
             'created_at' => $session->created_at?->toISOString(),
         ];
     }

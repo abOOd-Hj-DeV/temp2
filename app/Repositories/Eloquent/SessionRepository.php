@@ -63,6 +63,15 @@ class SessionRepository implements SessionRepositoryInterface
             ->count();
     }
 
+    public function countNonCancelledForPatientInRange(string $patientId, string $from, string $to): int
+    {
+        return TherapySession::where('patient_id', $patientId)
+            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->whereDate('session_date', '>=', $from)
+            ->whereDate('session_date', '<=', $to)
+            ->count();
+    }
+
     public function hasConflict(string $therapistId, string $date, string $time): bool
     {
         return in_array(substr($time, 0, 5), $this->bookedTimesFor($therapistId, $date), true);

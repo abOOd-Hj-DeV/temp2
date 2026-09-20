@@ -26,7 +26,7 @@ class SessionController extends Controller
      */
     public function book(BookSessionRequest $request): JsonResponse
     {
-        $session = $this->sessionService->book($request->user()->patient, $request->validated());
+        $session = $this->sessionService->book($this->patientOf($request), $request->validated());
 
         return response()->json([
             'message' => 'Session booked.',
@@ -38,7 +38,7 @@ class SessionController extends Controller
     {
         $paginator = $this->sessionService->forPatient(
             $request->user()->id,
-            (int) $request->input('per_page', 15)
+            $this->perPage($request)
         );
 
         return response()->json([
@@ -88,6 +88,45 @@ class SessionController extends Controller
             'message' => 'Payment proof submitted for review.',
             'payment' => $this->paymentReview->toArray($payment),
         ], 202);
+    }
+
+    /** Patient confirms the session took place (after its start time). */
+    public function confirmAttendance(Request $request, TherapySession $session): JsonResponse
+    {
+        $session = $this->sessionService->confirmAttendance($session, $request->user());
+
+        return response()->json(['message' => 'Attendance confirmed.', 'session' => $this->sessionService->toArray($session)]);
+    }
+
+    /** Patient asks to move the session; the therapist must approve. */
+    public function requestReschedule(Request $request, TherapySession $session): JsonResponse
+    {
+        $this->assertParticipant($request, $session);
+
+        $data = $request->validate([
+            'session_date' => 'required|date_format:Y-m-d|after_or_equal:today',
+            'session_time' => 'required|date_format:H:i',
+        ]);
+
+        $session = $this->sessionService->requestReschedule($session, $request->user(), $data['session_date'], $data['session_time']);
+
+        return response()->json([
+            'message' => 'Reschedule requested; awaiting your therapist\'s approval.',
+            'session' => $this->sessionService->toArray($session),
+        ], 202);
+    }
+
+    /** Therapist approves or rejects the pending reschedule request. */
+    public function decideReschedule(Request $request, TherapySession $session): JsonResponse
+    {
+        $data = $request->validate(['action' => 'required|in:approve,reject']);
+
+        $session = $this->sessionService->decideReschedule($session, $request->user(), $data['action'] === 'approve');
+
+        return response()->json([
+            'message' => $data['action'] === 'approve' ? 'Session rescheduled.' : 'Reschedule request rejected.',
+            'session' => $this->sessionService->toArray($session),
+        ]);
     }
 
     /** Therapist confirms a paid/free pending session. */

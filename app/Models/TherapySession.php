@@ -19,6 +19,8 @@ class TherapySession extends Model
         'patient_id', 'therapist_id', 'session_date', 'session_time',
         'medium', 'price', 'status', 'link', 'summary', 'is_initial',
         'payment_status', 'reminder_sent', 'reminder_1h_sent', 'reminder_attempts', 'reminder_1h_attempts',
+        'attendance_confirmed_at', 'report_revision', 'reschedule_date', 'reschedule_time',
+        'reschedule_requested_by', 'reschedule_requested_at',
     ];
 
     protected $casts = [
@@ -30,6 +32,10 @@ class TherapySession extends Model
         'status' => SessionStatus::class,
         'medium' => SessionMedium::class,
         'payment_status' => PaymentStatus::class,
+        'attendance_confirmed_at' => 'datetime',
+        'report_revision' => 'integer',
+        'reschedule_date' => 'date',
+        'reschedule_requested_at' => 'datetime',
     ];
 
     public function patient(): BelongsTo

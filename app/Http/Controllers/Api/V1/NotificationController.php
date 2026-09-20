@@ -10,7 +10,7 @@ class NotificationController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $paginator = $request->user()->notifications()->paginate((int) $request->input('per_page', 20));
+        $paginator = $request->user()->notifications()->paginate($this->perPage($request, 20));
 
         return response()->json([
             'data' => collect($paginator->items())->map(fn ($n) => [
