@@ -54,6 +54,14 @@ class SessionService
         try {
             $session = DB::transaction(function () use ($patient, $therapist, $data, $date, $time) {
                 $therapist = Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
+                // Re-read the assignment under lock so a concurrent switch or
+                // booking cannot race it; the caller's instance stays in sync.
+                $patient->setRawAttributes(
+                    Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail()->getAttributes(),
+                    true
+                );
+
+                $this->assertBookableTherapist($patient, $therapist);
 
                 if (! $this->therapistService->isSlotAvailable($therapist, $date, $time)) {
                     throw ValidationException::withMessages(['session_time' => 'The requested slot is not available.']);
@@ -97,7 +105,7 @@ class SessionService
 
                 $this->logStatus($session, null, SessionStatus::PENDING, $patient->user_id);
 
-                if ($patient->therapist_id !== $therapist->user_id) {
+                if ($patient->therapist_id === null) {
                     $patient->update(['therapist_id' => $therapist->user_id]);
                 }
 
@@ -276,11 +284,11 @@ class SessionService
 
             $therapist = Therapist::whereKey($locked->therapist_id)->firstOrFail();
 
-            if (! $this->therapistService->isSlotAvailable($therapist, $date, $time)) {
+            if (! $this->therapistService->isSlotAvailable($therapist, $date, $time, $locked->id)) {
                 throw ValidationException::withMessages(['session_time' => 'The requested slot is not available.']);
             }
 
-            if ($this->sessions->hasConflict($therapist->user_id, $date->toDateString(), $time)) {
+            if ($this->sessions->hasConflict($therapist->user_id, $date->toDateString(), $time, $locked->id)) {
                 throw ValidationException::withMessages(['session_time' => 'The requested slot is already taken.']);
             }
 
@@ -332,7 +340,7 @@ class SessionService
                 ];
 
                 if ($approve) {
-                    if ($this->sessions->hasConflict($locked->therapist_id, $newDate, $newTime)) {
+                    if ($this->sessions->hasConflict($locked->therapist_id, $newDate, $newTime, $locked->id)) {
                         throw ValidationException::withMessages(['session_time' => 'The requested slot is no longer free.']);
                     }
 
@@ -483,6 +491,20 @@ class SessionService
         if ($this->sessions->countNonCancelledForPatientInRange($patient->user_id, $day, $day) >= $daily) {
             throw ValidationException::withMessages([
                 'session_date' => "Your package allows {$daily} session(s) per day.",
+            ]);
+        }
+    }
+
+    /**
+     * The first booking assigns the therapist; afterwards the assignment only
+     * changes through the reviewed therapist-switch workflow, never as a side
+     * effect of booking with someone else.
+     */
+    private function assertBookableTherapist(Patient $patient, Therapist $therapist): void
+    {
+        if ($patient->therapist_id !== null && $patient->therapist_id !== $therapist->user_id) {
+            throw ValidationException::withMessages([
+                'therapist_id' => 'Sessions can only be booked with your assigned therapist. Request a therapist switch to change it.',
             ]);
         }
     }

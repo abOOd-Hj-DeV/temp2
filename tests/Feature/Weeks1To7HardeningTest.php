@@ -13,14 +13,18 @@ use App\Models\Therapist;
 use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
 use App\Models\User;
+use App\Notifications\RedFlagEscalatedNotification;
+use App\Notifications\RedFlagRaisedNotification;
 use App\Services\Messaging\WhatsAppSenderInterface;
 use App\Services\NotificationService;
 use Database\Seeders\RolePermissionSeeder;
+use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -192,6 +196,31 @@ class Weeks1To7HardeningTest extends TestCase
         ]);
         $user->forceFill(['deletion_scheduled_at' => now()->subMinute()])->save();
 
+        // Owned uploads and free-text mood notes must go; other users' files must not.
+        $disk = Storage::disk('local');
+        $disk->put('payment-proofs/mine.png', 'x');
+        $disk->put('payment-proofs/theirs.png', 'y');
+        $payment = Payment::create([
+            'therapy_session_id' => $session->id, 'amount' => 50,
+            'proof_file_path' => 'payment-proofs/mine.png', 'status' => 'approved',
+        ]);
+        $otherPatientUser = $this->makeUser('patient', '+963900000129');
+        Patient::create(['user_id' => $otherPatientUser->id, 'full_name' => 'Other', 'age' => 30, 'gender' => 'other', 'language' => 'en']);
+        $otherSession = TherapySession::create([
+            'patient_id' => $otherPatientUser->id, 'therapist_id' => $this->therapist->user_id,
+            'session_date' => $this->date, 'session_time' => '11:00', 'status' => 'completed',
+            'medium' => 'zoom', 'price' => 50, 'payment_status' => 'paid',
+        ]);
+        Payment::create([
+            'therapy_session_id' => $otherSession->id, 'amount' => 50,
+            'proof_file_path' => 'payment-proofs/theirs.png', 'status' => 'approved',
+        ]);
+        DB::table('mood_logs')->insert([
+            'id' => (string) Str::uuid(), 'patient_id' => $this->patient->user_id,
+            'score' => 4, 'notes' => 'Argued with my brother Ahmad again', 'log_date' => now()->toDateString(),
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
         $this->app->call([new PruneScheduledDeletionsJob, 'handle']);
 
         $user->refresh();
@@ -200,6 +229,39 @@ class Weeks1To7HardeningTest extends TestCase
         $this->assertNotSame('+963900000120', $user->whatsapp_number);
         $this->assertSame('Anonymous patient', $this->patient->refresh()->full_name);
         $this->assertDatabaseHas('therapy_sessions', ['id' => $session->id, 'payment_status' => 'paid']);
+
+        $disk->assertMissing('payment-proofs/mine.png');
+        $disk->assertExists('payment-proofs/theirs.png');
+        $this->assertDatabaseHas('payments', ['id' => $payment->id, 'amount' => 50, 'status' => 'approved']);
+        $this->assertSame(1, DB::table('mood_logs')->where('patient_id', $this->patient->user_id)->count());
+        $this->assertNull(DB::table('mood_logs')->where('patient_id', $this->patient->user_id)->value('notes'));
+    }
+
+    public function test_anonymization_is_retried_when_an_owned_upload_cannot_be_deleted(): void
+    {
+        $this->therapistUser->forceFill(['deletion_scheduled_at' => now()->subMinute()])->save();
+        Therapist::whereKey($this->therapist->user_id)->update(['license_file_path' => 'licenses/lic.pdf']);
+
+        $failing = \Mockery::mock(Filesystem::class);
+        $failing->shouldReceive('exists')->with('licenses/lic.pdf')->andReturn(true);
+        $failing->shouldReceive('delete')->with('licenses/lic.pdf')->andReturn(false);
+        Storage::set('local', $failing);
+
+        $this->app->call([new PruneScheduledDeletionsJob, 'handle']);
+
+        $this->therapistUser->refresh();
+        $this->assertNull($this->therapistUser->anonymized_at);
+        $this->assertNotNull($this->therapistUser->deletion_scheduled_at);
+        $this->assertSame('licenses/lic.pdf', $this->therapist->refresh()->license_file_path);
+
+        // Storage recovers: the next run completes and clears the licence reference.
+        Storage::fake('local');
+        Storage::disk('local')->put('licenses/lic.pdf', 'pdf');
+        $this->app->call([new PruneScheduledDeletionsJob, 'handle']);
+
+        $this->assertNotNull($this->therapistUser->refresh()->anonymized_at);
+        $this->assertNull($this->therapist->refresh()->license_file_path);
+        Storage::disk('local')->assertMissing('licenses/lic.pdf');
     }
 
     public function test_mood_logging_is_daily_unique_and_low_streak_raises_red_flag(): void
@@ -617,6 +679,60 @@ class Weeks1To7HardeningTest extends TestCase
         $this->postJson("/api/v1/admin/red-flags/{$id}/status", ['status' => 'resolved'])->assertStatus(422);
         $this->postJson("/api/v1/admin/red-flags/{$id}/status", ['status' => 'resolved', 'action_taken' => 'Called patient.'])->assertOk();
         $this->assertSame(0, $this->getJson('/api/v1/admin/red-flags')->json('stats.open'));
+    }
+
+    public function test_red_flag_alerts_reach_the_supervisor_and_the_current_therapist_once_each(): void
+    {
+        $supervisor = $this->makeUser('clinical_supervisor', '+963900000193');
+        $this->patient->update(['therapist_id' => $this->therapist->user_id]);
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $answers = array_fill_keys(array_map(fn ($i) => "q{$i}", range(1, 9)), 0);
+        $answers['q9'] = 3;
+        $this->postJson('/api/v1/patients/assessment', ['type' => 'phq9', 'answers' => $answers])->assertCreated();
+
+        $flag = RedFlag::sole();
+        $this->assertSame($supervisor->id, $flag->assigned_to);
+        $recipients = DB::table('notifications')->where('type', RedFlagRaisedNotification::class)->pluck('notifiable_id');
+        $this->assertEqualsCanonicalizing([$supervisor->id, $this->therapistUser->id], $recipients->all());
+
+        // Replayed: still exactly one per recipient.
+        app(NotificationService::class)->redFlagRaised($flag->fresh());
+        $this->assertSame(2, DB::table('notifications')->where('type', RedFlagRaisedNotification::class)->count());
+
+        // Supervisor who is also the assigned therapist is notified once; an
+        // unapproved therapist is not alerted at all.
+        DB::table('notifications')->delete();
+        $this->patient->update(['therapist_id' => $supervisor->id]);
+        app(NotificationService::class)->redFlagRaised(RedFlag::sole()->fresh());
+        $this->assertSame([$supervisor->id], DB::table('notifications')->pluck('notifiable_id')->all());
+
+        DB::table('notifications')->delete();
+        $this->patient->update(['therapist_id' => $this->therapist->user_id]);
+        Therapist::whereKey($this->therapist->user_id)->update(['approval_status' => 'pending']);
+        app(NotificationService::class)->redFlagRaised(RedFlag::sole()->fresh());
+        $this->assertSame([$supervisor->id], DB::table('notifications')->pluck('notifiable_id')->all());
+    }
+
+    public function test_red_flag_escalation_retry_only_reaches_staff_missed_by_the_previous_attempt(): void
+    {
+        $supervisor = $this->makeUser('clinical_supervisor', '+963900000194');
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $answers = array_fill_keys(array_map(fn ($i) => "q{$i}", range(1, 9)), 0);
+        $answers['q9'] = 3;
+        $this->postJson('/api/v1/patients/assessment', ['type' => 'phq9', 'answers' => $answers])->assertCreated();
+        $flag = RedFlag::sole();
+
+        $notifications = app(NotificationService::class);
+        $escalations = fn () => DB::table('notifications')->where('type', RedFlagEscalatedNotification::class)->pluck('notifiable_id');
+
+        // Attempt 1 reached only the supervisor before the run died.
+        $this->assertSame(1, $notifications->redFlagEscalated($flag, [$supervisor]));
+        // Attempt 2 covers everyone: only the admin is new.
+        $this->assertSame(1, $notifications->redFlagEscalated($flag, [$supervisor, $this->admin]));
+        $this->assertEqualsCanonicalizing([$supervisor->id, $this->admin->id], $escalations()->all());
+        $this->assertSame(0, $notifications->redFlagEscalated($flag, [$supervisor, $this->admin]));
     }
 
     public function test_stale_high_priority_red_flags_are_escalated_to_all_clinical_staff_once(): void

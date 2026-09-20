@@ -225,6 +225,69 @@ class AuthFlowTest extends TestCase
         $this->assertCount($sentBefore, $this->sender->messages);
     }
 
+    public function test_login_lockout_does_not_reveal_whether_a_number_is_registered(): void
+    {
+        $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertCreated();
+        $this->postJson('/api/v1/auth/otp/verify', ['whatsapp_number' => '+963900000001', 'otp' => $this->lastOtp()])->assertOk();
+
+        // Each number from its own client so the per-IP throttle stays out of the way.
+        $attempt = fn (string $number, string $ip) => $this->withServerVariables(['REMOTE_ADDR' => $ip])
+            ->postJson('/api/v1/auth/login', ['whatsapp_number' => $number, 'password' => 'wrong-password'])
+            ->assertUnprocessable()->json();
+
+        $unknownFailures = [];
+        for ($i = 0; $i < 6; $i++) {
+            $unknownFailures[] = $attempt('+963900000999', '10.0.0.1');
+        }
+
+        $knownFailures = [];
+        for ($i = 0; $i < 6; $i++) {
+            $knownFailures[] = $attempt('+963900000001', '10.0.0.2');
+        }
+
+        // Same bodies attempt-for-attempt: five "invalid credentials", then lockout.
+        $this->assertSame($knownFailures, $unknownFailures);
+        $this->assertNotSame($unknownFailures[0], $unknownFailures[5]);
+        $this->assertStringContainsString('Too many failed attempts', json_encode($unknownFailures[5]));
+    }
+
+    public function test_login_lockout_counts_attempts_per_normalised_number(): void
+    {
+        $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertCreated();
+        $this->postJson('/api/v1/auth/otp/verify', ['whatsapp_number' => '+963900000001', 'otp' => $this->lastOtp()])->assertOk();
+
+        foreach (['+963900000001', '963900000001', '+963900000001', '963900000001', '+963900000001'] as $number) {
+            $this->postJson('/api/v1/auth/login', ['whatsapp_number' => $number, 'password' => 'wrong-password'])->assertUnprocessable();
+        }
+
+        $this->postJson('/api/v1/auth/login', ['whatsapp_number' => '+963900000001', 'password' => 'Secret123!'])
+            ->assertUnprocessable()->assertJsonPath('errors.whatsapp_number.0', fn ($m) => str_contains($m, 'Too many failed attempts'));
+    }
+
+    public function test_throttled_or_failed_reregistration_leaves_the_pending_account_untouched(): void
+    {
+        $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertCreated();
+        $pending = User::where('whatsapp_number', '+963900000001')->firstOrFail();
+        $before = $pending->only(['name', 'email', 'password']);
+
+        $hijack = $this->registerPayload([
+            'name' => 'Someone Else', 'email' => 'else@example.com',
+            'password' => 'Other123!', 'password_confirmation' => 'Other123!',
+        ]);
+
+        // OTP resend cooldown still active: rejected, nothing rewritten.
+        $this->postJson('/api/v1/auth/register', $hijack)->assertUnprocessable()->assertJsonValidationErrorFor('otp');
+        $this->assertSame($before, $pending->refresh()->only(['name', 'email', 'password']));
+        $this->assertCount(1, $this->sender->messages);
+
+        // Delivery failure: still nothing rewritten and the pending row survives.
+        Cache::flush();
+        $this->sender->fail = true;
+        $this->postJson('/api/v1/auth/register', $hijack)->assertUnprocessable();
+        $this->assertSame($before, $pending->refresh()->only(['name', 'email', 'password']));
+        $this->assertDatabaseHas('users', ['id' => $pending->id]);
+    }
+
     public function test_unverified_number_gets_fresh_otp_on_reregister(): void
     {
         $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertCreated();

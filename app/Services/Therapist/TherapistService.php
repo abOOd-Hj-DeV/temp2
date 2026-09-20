@@ -6,6 +6,7 @@ use App\Enums\ApprovalStatus;
 use App\Enums\SessionStatus;
 use App\Exceptions\ConflictException;
 use App\Models\Therapist;
+use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\SessionRepositoryInterface;
 use App\Repositories\Contracts\TherapistRepositoryInterface;
@@ -56,7 +57,7 @@ class TherapistService
      *
      * @return array<int, string> e.g. ['09:00','10:00']
      */
-    public function availableSlots(Therapist $therapist, Carbon $date): array
+    public function availableSlots(Therapist $therapist, Carbon $date, ?string $excludeSessionId = null): array
     {
         $day = strtolower($date->format('l'));
         $windows = $therapist->availability[$day] ?? [];
@@ -65,8 +66,8 @@ class TherapistService
             return [];
         }
 
-        $duration = (int) config('sakina.session_duration_minutes', 60);
-        $booked = $this->sessions->bookedTimesFor($therapist->user_id, $date->toDateString());
+        $duration = TherapySession::durationMinutes();
+        $booked = $this->sessions->bookedTimesFor($therapist->user_id, $date->toDateString(), $excludeSessionId);
         $now = now();
         $slots = [];
 
@@ -81,8 +82,14 @@ class TherapistService
             for ($slot = $start->copy(); $slot->copy()->addMinutes($duration)->lte($end); $slot->addMinutes($duration)) {
                 $time = $slot->format('H:i');
 
-                if ($slot->lte($now) || in_array($time, $booked, true)) {
+                if ($slot->lte($now)) {
                     continue;
+                }
+
+                foreach ($booked as $bookedTime) {
+                    if (TherapySession::startTimesOverlap($bookedTime, $time)) {
+                        continue 2;
+                    }
                 }
 
                 $slots[] = $time;
@@ -94,9 +101,9 @@ class TherapistService
         return $slots;
     }
 
-    public function isSlotAvailable(Therapist $therapist, Carbon $date, string $time): bool
+    public function isSlotAvailable(Therapist $therapist, Carbon $date, string $time, ?string $excludeSessionId = null): bool
     {
-        return in_array(substr($time, 0, 5), $this->availableSlots($therapist, $date), true);
+        return in_array(substr($time, 0, 5), $this->availableSlots($therapist, $date, $excludeSessionId), true);
     }
 
     /**
