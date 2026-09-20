@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Services\Messaging\WhatsAppSenderInterface;
+use App\Support\DurableQueue;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -30,9 +31,22 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
     public function handle(WhatsAppSenderInterface $whatsApp): void
     {
-        if (! $whatsApp->send($this->phoneNumber, $this->message)) {
+        if ($whatsApp->send($this->phoneNumber, $this->message)) {
+            return;
+        }
+
+        $fallback = $this->job?->getConnectionName() === 'sync' ? DurableQueue::fallbackConnection() : null;
+
+        if ($fallback === null) {
             throw new \RuntimeException('WhatsApp provider rejected the message.');
         }
+
+        // Running inline: hand the retries to a worker instead of failing the request.
+        static::dispatch($this->phoneNumber, $this->message, $this->context)
+            ->onConnection($fallback)
+            ->delay(now()->addSeconds($this->backoff[0]));
+
+        Log::warning('WhatsApp message deferred to the durable queue', $this->context + ['connection' => $fallback]);
     }
 
     public function failed(\Throwable $e): void

@@ -546,8 +546,9 @@ class Weeks1To7HardeningTest extends TestCase
 
     public function test_duplicate_proof_upload_is_rejected_and_review_is_single_shot(): void
     {
-        $this->bookAs($this->patientUser)->assertCreated();
-        $session = TherapySession::firstOrFail();
+        $this->bookAs($this->patientUser)->assertCreated(); // free initial
+        $this->bookAs($this->patientUser, ['session_time' => '11:00'])->assertCreated();
+        $session = TherapySession::where('payment_status', 'pending')->firstOrFail();
 
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
         $this->post("/api/v1/sessions/{$session->id}/proof", ['proof' => $this->png()], ['Accept' => 'application/json'])->assertStatus(202);

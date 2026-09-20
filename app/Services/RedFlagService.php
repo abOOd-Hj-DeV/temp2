@@ -61,8 +61,10 @@ class RedFlagService
     /**
      * One open flag per (patient, type): a repeated signal while the first is
      * still open raises the existing flag's priority instead of creating a
-     * duplicate. The patient row is locked first so concurrent signals are
-     * serialised; red_flags_open_per_patient_type_unique is the backstop.
+     * duplicate. An open flag nobody has touched for `red_flag_stale_days` is
+     * closed as superseded and a fresh flag linked to it is opened instead.
+     * The patient row is locked first so concurrent signals are serialised;
+     * red_flags_open_per_patient_type_unique is the backstop.
      */
     private function createOrMerge(
         string $patientId,
@@ -75,8 +77,15 @@ class RedFlagService
             Patient::where('user_id', $patientId)->lockForUpdate()->first();
             $existing = $this->openFlag($patientId, $type);
 
-            if ($existing) {
+            if ($existing && ! $this->isStale($existing)) {
                 return $this->merge($existing, $assessmentId, $priority);
+            }
+
+            if ($existing) {
+                $this->redFlags->update($existing, [
+                    'status' => 'resolved',
+                    'action_taken' => 'Superseded by a new flag: no activity for '.config('sakina.red_flag_stale_days', 30).' days.',
+                ]);
             }
 
             $created = $this->redFlags->create([
@@ -85,8 +94,9 @@ class RedFlagService
                 'type' => $type->value,
                 'description' => $description,
                 'priority' => $priority->value,
-                'assigned_to' => $this->defaultAssignee()?->id,
+                'assigned_to' => $existing?->assigned_to ?? $this->defaultAssignee()?->id,
                 'status' => 'open',
+                'previous_flag_id' => $existing?->id,
             ]);
 
             $created->wasRecentlyCreated = true;
@@ -95,7 +105,9 @@ class RedFlagService
         });
 
         if ($flag->wasRecentlyCreated) {
-            $this->notifyRaised($flag);
+            $this->notifications->deliver('redFlagRaised', $flag);
+        } elseif ($flag->priorityRaised) {
+            $this->notifications->deliver('redFlagPriorityRaised', $flag);
         }
 
         Log::info('Red flag '.($flag->wasRecentlyCreated ? 'created' : 'merged'), [
@@ -116,12 +128,21 @@ class RedFlagService
             ->first();
     }
 
+    private function isStale(RedFlag $flag): bool
+    {
+        $days = (int) config('sakina.red_flag_stale_days', 30);
+        $lastActivity = $flag->updated_at ?? $flag->created_at;
+
+        return $days > 0 && $lastActivity !== null && $lastActivity->lt(now()->subDays($days));
+    }
+
     private function merge(RedFlag $existing, ?string $assessmentId, RedFlagPriority $priority): RedFlag
     {
         $update = [];
 
         if ($this->rank($priority) > $this->rank($existing->priority)) {
             $update['priority'] = $priority->value;
+            $existing->priorityRaised = true;
         }
 
         if ($assessmentId !== null && $existing->assessment_id === null) {
@@ -145,18 +166,6 @@ class RedFlagService
             RedFlagPriority::MEDIUM => 2,
             RedFlagPriority::HIGH => 3,
         };
-    }
-
-    private function notifyRaised(RedFlag $flag): void
-    {
-        try {
-            $this->notifications->redFlagRaised($flag);
-        } catch (\Throwable $e) {
-            Log::error('Red flag notification failed', [
-                'red_flag_id' => $flag->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
     }
 
     public function getPatientRedFlags(string $patientId): array
@@ -276,7 +285,9 @@ class RedFlagService
             'action_taken' => $flag->action_taken,
             'assigned_to' => $flag->assigned_to,
             'assessment_id' => $flag->assessment_id,
+            'previous_flag_id' => $flag->previous_flag_id,
             'created_at' => $flag->created_at?->toISOString(),
+            'updated_at' => $flag->updated_at?->toISOString(),
         ];
     }
 }

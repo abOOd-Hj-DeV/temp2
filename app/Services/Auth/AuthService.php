@@ -387,7 +387,7 @@ class AuthService
         $expiresAt = now()->addMinutes((int) config('sakina.access_token_ttl_minutes', 120));
         $token = $user->createToken(self::TOKEN_NAME, ['*'], $expiresAt);
 
-        $refreshExpiresAt = now()->addDays((int) config('sakina.refresh_token_ttl_days', 30));
+        $refreshExpiresAt = now()->addDays((int) config('sakina.refresh_token_ttl_days', 15));
         $plainRefresh = Str::random(64);
 
         RefreshToken::create([

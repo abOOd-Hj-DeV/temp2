@@ -82,26 +82,32 @@ class SessionBookingTest extends TestCase
         ], $overrides));
     }
 
-    public function test_booking_without_subscription_charges_configured_price(): void
+    public function test_first_session_is_free_once_then_configured_price_applies_without_subscription(): void
     {
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
 
-        $res = $this->book()->assertCreated()
+        $free = $this->book()->assertCreated()
             ->assertJsonPath('session.status', 'pending')
             ->assertJsonPath('session.is_initial', true)
-            ->assertJsonPath('session.payment_status', 'pending')
+            ->assertJsonPath('session.payment_status', 'free')
             ->assertJsonPath('session.medium', 'zoom');
+        $this->assertSame('0.00', $free->json('session.price'));
+
+        $res = $this->book(['session_time' => '11:00'])->assertCreated()
+            ->assertJsonPath('session.is_initial', false)
+            ->assertJsonPath('session.payment_status', 'pending')
+            ->assertJsonPath('session.subscription_id', null);
 
         $this->assertSame('50.00', $res->json('session.price'));
         $this->assertDatabaseHas('therapy_sessions', [
             'patient_id' => $this->patient->user_id,
-            'is_initial' => true,
+            'is_initial' => false,
             'payment_status' => 'pending',
         ]);
         $this->assertSame($this->therapist->user_id, $this->patient->refresh()->therapist_id);
-        // patient + therapist both notified in-app
-        $this->assertSame(1, $this->patientUser->notifications()->count());
-        $this->assertSame(1, $this->therapistUser->notifications()->count());
+        // patient + therapist both notified in-app, once per booking
+        $this->assertSame(2, $this->patientUser->notifications()->count());
+        $this->assertSame(2, $this->therapistUser->notifications()->count());
         // status log records the pending transition
         $this->assertDatabaseHas('session_status_logs', ['to_status' => 'pending']);
     }
@@ -283,7 +289,8 @@ class SessionBookingTest extends TestCase
     public function test_confirm_requires_non_pending_payment(): void
     {
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
-        $id = $this->book()->assertCreated()->json('session.id'); // pending payment
+        $this->book()->assertCreated(); // free initial session
+        $id = $this->book(['session_time' => '11:00'])->assertCreated()->json('session.id'); // pending payment
 
         Sanctum::actingAs($this->therapistUser, ['*'], 'api');
         $this->postJson("/api/v1/sessions/{$id}/confirm")->assertStatus(422);

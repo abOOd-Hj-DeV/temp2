@@ -22,7 +22,11 @@ class RedFlag extends Model
     protected $fillable = [
         'id', 'patient_id', 'assessment_id', 'type', 'description',
         'assigned_to', 'status', 'action_taken', 'priority', 'escalated_at', 'escalation_attempts',
+        'previous_flag_id',
     ];
+
+    /** Set (not persisted) when a merged signal raised this flag's priority. */
+    public bool $priorityRaised = false;
 
     protected $casts = [
         'type' => RedFlagType::class,
@@ -37,6 +41,14 @@ class RedFlag extends Model
     public function patient(): BelongsTo
     {
         return $this->belongsTo(Patient::class, 'patient_id', 'user_id');
+    }
+
+    /**
+     * The stale flag this one superseded.
+     */
+    public function previousFlag(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'previous_flag_id');
     }
 
     /**

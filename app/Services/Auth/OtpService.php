@@ -4,6 +4,7 @@ namespace App\Services\Auth;
 
 use App\Models\User;
 use App\Services\Messaging\WhatsAppSenderInterface;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -80,6 +81,18 @@ class OtpService
      */
     public function verify(User $user, string $code, string $purpose): bool
     {
+        try {
+            return Cache::lock($this->lockKey($user, $purpose), 10)
+                ->block(5, fn () => $this->verifyLocked($user, $code, $purpose));
+        } catch (LockTimeoutException) {
+            Log::warning('OTP verification lock timed out', ['user_id' => $user->id, 'purpose' => $purpose]);
+
+            return false;
+        }
+    }
+
+    private function verifyLocked(User $user, string $code, string $purpose): bool
+    {
         $storedHash = Cache::get($this->codeKey($user, $purpose));
 
         if (! is_string($storedHash)) {
@@ -145,5 +158,10 @@ class OtpService
     private function cooldownKey(User $user, string $purpose): string
     {
         return "otp_cooldown:{$purpose}:{$this->normalizedPhone($user)}";
+    }
+
+    private function lockKey(User $user, string $purpose): string
+    {
+        return "otp_verify_lock:{$purpose}:{$this->normalizedPhone($user)}";
     }
 }

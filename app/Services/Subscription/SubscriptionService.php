@@ -39,7 +39,7 @@ class SubscriptionService
             ?? throw ValidationException::withMessages(['package_id' => 'The selected package is not available.']);
         $price = (float) $package->price;
         $disk = config('sakina.uploads_disk', 'local');
-        $path = $proof->store("payment-proofs/{$patient->user_id}", ['disk' => $disk]);
+        $path = PaymentReviewService::storeProof($proof, "payment-proofs/{$patient->user_id}", $disk);
 
         try {
             $result = DB::transaction(function () use ($patient, $package, $path, $price) {
@@ -54,6 +54,7 @@ class SubscriptionService
 
                 $subscription = $this->subscriptions->create([
                     'patient_id' => $patient->user_id,
+                    'therapist_id' => $patient->therapist_id,
                     'type' => $package->code,
                     'package_id' => $package->id,
                     'sessions_total' => $package->number_of_sessions,

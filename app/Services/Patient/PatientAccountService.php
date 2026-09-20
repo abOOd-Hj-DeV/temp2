@@ -3,6 +3,7 @@
 namespace App\Services\Patient;
 
 use App\Models\Payment;
+use App\Models\RedFlag;
 use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
@@ -104,6 +105,20 @@ class PatientAccountService
                     'log_date' => $m->log_date?->toDateString(),
                     'score' => $m->score,
                     'notes' => $m->notes,
+                ])->all()
+                : [],
+            'red_flags' => $patient
+                ? RedFlag::where('patient_id', $patient->user_id)->orderBy('created_at')->get()->map(fn ($f) => [
+                    'id' => $f->id,
+                    'assessment_id' => $f->assessment_id,
+                    'type' => $f->type?->value,
+                    'priority' => $f->priority?->value,
+                    'status' => $f->status,
+                    'description' => $f->description,
+                    'action_taken' => $f->action_taken,
+                    'previous_flag_id' => $f->previous_flag_id,
+                    'created_at' => $f->created_at?->toISOString(),
+                    'updated_at' => $f->updated_at?->toISOString(),
                 ])->all()
                 : [],
             'subscriptions' => $patient

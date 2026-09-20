@@ -37,9 +37,11 @@ class SessionService
     /**
      * Book a session for a patient.
      *
-     * Business rule: the first-ever session (is_initial) is free when the
-     * patient holds an active approved subscription; otherwise the
-     * configured session price applies and awaits payment proof.
+     * Business rule: the first-ever session (is_initial) is always free, once.
+     * Afterwards a session booked under an active package is covered by the
+     * package price (price 0, no payment proof) within the package quota;
+     * without a package the configured single-session price applies and
+     * awaits payment proof.
      *
      * Every check runs inside the transaction while holding a row lock on
      * the therapist, and the partial unique index on
@@ -84,12 +86,18 @@ class SessionService
 
                 $isInitial = ! $this->sessions->hasUsedInitialSession($patient->user_id);
                 $subscription = $this->subscriptions->activeForPatient($patient->user_id);
-                $hasActiveSubscription = $subscription !== null;
-                $isFree = $isInitial && $hasActiveSubscription;
+                $coveringSubscription = null;
 
                 if ($subscription !== null) {
+                    $subscription = Subscription::whereKey($subscription->id)->lockForUpdate()->firstOrFail();
                     $this->assertWithinPackageQuota($patient, $subscription, $date);
+
+                    if (! $isInitial) {
+                        $coveringSubscription = $subscription;
+                    }
                 }
+
+                $isFree = $isInitial || $coveringSubscription !== null;
 
                 $session = $this->sessions->create([
                     'patient_id' => $patient->user_id,
@@ -101,7 +109,12 @@ class SessionService
                     'status' => SessionStatus::PENDING->value,
                     'is_initial' => $isInitial,
                     'payment_status' => $isFree ? PaymentStatus::FREE->value : PaymentStatus::PENDING->value,
+                    'subscription_id' => $coveringSubscription?->id,
                 ]);
+
+                if ($coveringSubscription !== null && $coveringSubscription->therapist_id === null) {
+                    $coveringSubscription->update(['therapist_id' => $therapist->user_id]);
+                }
 
                 $this->logStatus($session, null, SessionStatus::PENDING, $patient->user_id);
 
@@ -116,6 +129,7 @@ class SessionService
                     'date' => $date->toDateString(),
                     'time' => $time,
                     'price' => $session->price,
+                    'subscription_id' => $session->subscription_id,
                 ]);
 
                 return $session;
@@ -124,7 +138,7 @@ class SessionService
             throw new ConflictException('This slot was just booked by someone else.');
         }
 
-        $this->notifications->sessionBooked($session->fresh(['patient.user', 'therapist.user']));
+        $this->notifications->deliver('sessionBooked', $session->fresh(['patient.user', 'therapist.user']));
 
         return $session;
     }
@@ -142,6 +156,11 @@ class SessionService
         return $this->transition($session, SessionStatus::CANCELLED, $actor, [
             SessionStatus::PENDING,
             SessionStatus::CONFIRMED,
+        ], [
+            'reschedule_date' => null,
+            'reschedule_time' => null,
+            'reschedule_requested_by' => null,
+            'reschedule_requested_at' => null,
         ]);
     }
 
@@ -306,7 +325,7 @@ class SessionService
             return $locked->fresh(['patient.user', 'therapist.user']);
         });
 
-        $this->notifications->sessionRescheduleRequested($fresh, $fresh->therapist->user);
+        $this->notifications->deliver('sessionRescheduleRequested', $fresh, $fresh->therapist->user);
 
         return $fresh;
     }
@@ -364,7 +383,7 @@ class SessionService
             throw new ConflictException('The requested slot was just booked by someone else.');
         }
 
-        $this->notifications->sessionRescheduleDecided($fresh, $approve);
+        $this->notifications->deliver('sessionRescheduleDecided', $fresh, $approve);
 
         return $fresh;
     }
@@ -455,7 +474,7 @@ class SessionService
             return [$locked->fresh(['patient.user', 'therapist.user']), $from];
         });
 
-        $this->notifications->sessionStatusChanged($fresh, $from, $to);
+        $this->notifications->deliver('sessionStatusChanged', $fresh, $from, $to);
 
         return $fresh;
     }
@@ -571,6 +590,7 @@ class SessionService
             'status' => $session->status?->value,
             'is_initial' => $session->is_initial,
             'payment_status' => $session->payment_status?->value,
+            'subscription_id' => $session->subscription_id,
             'link' => $session->link,
             'summary' => $session->summary,
             'report_revision' => $session->report_revision,

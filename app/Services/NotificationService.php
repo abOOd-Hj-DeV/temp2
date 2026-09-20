@@ -6,6 +6,7 @@ use App\Enums\ApprovalStatus;
 use App\Enums\PaymentReviewStatus;
 use App\Enums\SessionStatus;
 use App\Enums\UserRole;
+use App\Jobs\RetryNotificationJob;
 use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\Assessment;
 use App\Models\Patient;
@@ -26,6 +27,8 @@ use App\Notifications\SessionReminderNotification;
 use App\Notifications\SessionStatusChangedNotification;
 use App\Notifications\TherapistApprovalNotification;
 use App\Notifications\TherapistSwitchDecidedNotification;
+use App\Support\DurableQueue;
+use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Notifications\Notification;
@@ -45,6 +48,39 @@ use Ramsey\Uuid\Uuid;
 class NotificationService
 {
     private const NAMESPACE = '5f5b1e7a-8c3b-4e0d-9a3c-2f1d0b6c7e11';
+
+    /**
+     * Run a notification method for a write that has already been committed.
+     * A failure never reaches the caller: it is reported and retried in the
+     * background until it succeeds (delivery is idempotent per recipient).
+     */
+    public function deliver(string $method, mixed ...$args): void
+    {
+        try {
+            $this->{$method}(...$args);
+        } catch (\Throwable $e) {
+            report($e);
+            Log::error('Notification failed after commit; scheduled for retry', [
+                'method' => $method,
+                'error' => $e->getMessage(),
+            ]);
+
+            try {
+                $job = (new RetryNotificationJob($method, $args))->delay(now()->addMinute());
+
+                if (DurableQueue::isSyncDefault() && ($fallback = DurableQueue::fallbackConnection()) !== null) {
+                    $job->onConnection($fallback);
+                }
+
+                app(Dispatcher::class)->dispatch($job);
+            } catch (\Throwable $queueError) {
+                Log::critical('Notification retry could not be queued', [
+                    'method' => $method,
+                    'error' => $queueError->getMessage(),
+                ]);
+            }
+        }
+    }
 
     public function assessmentCompleted(Patient $patient, Assessment $assessment): void
     {
@@ -80,6 +116,37 @@ class NotificationService
                     $redFlag->type->value,
                     $redFlag->priority->value,
                     substr($redFlag->id, 0, 8)
+                ),
+                ['red_flag_id' => $redFlag->id]
+            );
+        }
+    }
+
+    /**
+     * A merged signal raised an open flag's priority: the same recipients are
+     * told again, once per priority level reached.
+     */
+    public function redFlagPriorityRaised(RedFlag $redFlag): void
+    {
+        $recipients = collect([$redFlag->assignedUser, $this->currentTherapistFor($redFlag)])
+            ->filter(fn ($user) => $user instanceof User)
+            ->unique('id');
+
+        foreach ($recipients as $recipient) {
+            if (! $this->notifyOnce(
+                $recipient,
+                new RedFlagRaisedNotification($redFlag, 'red_flag_priority_raised'),
+                "red_flag.priority_raised:{$redFlag->id}:{$redFlag->priority->value}"
+            )) {
+                continue;
+            }
+
+            $this->sendWhatsAppSafe(
+                $recipient->whatsapp_number,
+                sprintf(
+                    'Sakina alert: red flag ref %s was raised to %s priority and needs your review.',
+                    substr($redFlag->id, 0, 8),
+                    $redFlag->priority->value
                 ),
                 ['red_flag_id' => $redFlag->id]
             );
@@ -234,12 +301,12 @@ class NotificationService
         }
     }
 
-    public function therapistApprovalDecided(Therapist $therapist): void
+    public function therapistApprovalDecided(Therapist $therapist, ?string $reason = null): void
     {
         $status = $therapist->approval_status?->value;
         $key = "therapist.approval:{$therapist->user_id}:{$status}:{$therapist->updated_at?->timestamp}";
 
-        if (! $this->notifyOnce($therapist->user, new TherapistApprovalNotification($therapist), $key)) {
+        if (! $this->notifyOnce($therapist->user, new TherapistApprovalNotification($therapist, $reason), $key)) {
             return;
         }
 
@@ -260,6 +327,7 @@ class NotificationService
 
         if ($switch->status === 'approved') {
             $this->notifyOnce($switch->newTherapist?->user, new TherapistSwitchDecidedNotification($switch), $key);
+            $this->notifyOnce($switch->oldTherapist?->user, new TherapistSwitchDecidedNotification($switch, 'patient_transferred'), $key);
         }
     }
 

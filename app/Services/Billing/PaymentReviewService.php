@@ -22,6 +22,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 
 class PaymentReviewService
 {
@@ -61,7 +62,7 @@ class PaymentReviewService
     public function submitSessionProof(TherapySession $session, UploadedFile $proof): Payment
     {
         $disk = config('sakina.uploads_disk', 'local');
-        $path = $proof->store("payment-proofs/{$session->patient_id}", ['disk' => $disk]);
+        $path = self::storeProof($proof, "payment-proofs/{$session->patient_id}", $disk);
 
         try {
             return DB::transaction(function () use ($session, $path) {
@@ -98,6 +99,26 @@ class PaymentReviewService
             Storage::disk($disk)->delete($path);
             throw $e;
         }
+    }
+
+    /**
+     * Persist an uploaded proof, failing closed (503) when the disk rejects it
+     * instead of letting an empty path reach the database.
+     */
+    public static function storeProof(UploadedFile $proof, string $directory, string $disk): string
+    {
+        try {
+            $path = $proof->store($directory, ['disk' => $disk]);
+        } catch (\Throwable $e) {
+            report($e);
+            $path = false;
+        }
+
+        if (! is_string($path) || $path === '') {
+            throw new ServiceUnavailableHttpException(30, 'The payment proof could not be stored. Please try again.');
+        }
+
+        return $path;
     }
 
     /**
@@ -158,7 +179,7 @@ class PaymentReviewService
             return $locked;
         });
 
-        $this->notifications->paymentReviewed($payment->fresh(['subscription.patient.user', 'session.patient.user']));
+        $this->notifications->deliver('paymentReviewed', $payment->fresh(['subscription.patient.user', 'session.patient.user']));
 
         return $payment->refresh();
     }
@@ -205,6 +226,7 @@ class PaymentReviewService
             'verification_status' => 'approved',
             'start_date' => now()->toDateString(),
             'end_date' => now()->addDays($days)->toDateString(),
+            'therapist_id' => $subscription->therapist_id ?? $subscription->patient?->therapist_id,
         ]);
 
         // Point the patient's profile at the live subscription.

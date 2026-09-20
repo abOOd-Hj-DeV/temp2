@@ -12,6 +12,7 @@ class RedFlagRaisedNotification extends Notification
 
     public function __construct(
         private RedFlag $redFlag,
+        private string $kind = 'red_flag_raised',
     ) {}
 
     public function via(object $notifiable): array
@@ -22,7 +23,7 @@ class RedFlagRaisedNotification extends Notification
     public function toDatabase(object $notifiable): array
     {
         return [
-            'kind' => 'red_flag_raised',
+            'kind' => $this->kind,
             'red_flag_id' => $this->redFlag->id,
             'patient_id' => $this->redFlag->patient_id,
             'type' => $this->redFlag->type,
