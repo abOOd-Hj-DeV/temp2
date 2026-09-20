@@ -13,6 +13,7 @@ use App\Models\RedFlag;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\RedFlagRepositoryInterface;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -42,32 +43,7 @@ class RedFlagService
         RedFlagPriority $priority,
         string $description,
     ): RedFlag {
-        $redFlag = $this->redFlags->create([
-            'patient_id' => $assessment->patient_id,
-            'assessment_id' => $assessment->id,
-            'type' => $type->value,
-            'description' => $description,
-            'priority' => $priority->value,
-            'assigned_to' => $this->defaultAssignee()?->id,
-            'status' => 'open',
-        ]);
-
-        try {
-            $this->notifications->redFlagRaised($redFlag);
-        } catch (\Throwable $e) {
-            Log::error('Red flag notification failed', [
-                'red_flag_id' => $redFlag->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        Log::info('Red flag created', [
-            'red_flag_id' => $redFlag->id,
-            'patient_id' => $assessment->patient_id,
-            'priority' => $priority->value,
-        ]);
-
-        return $redFlag;
+        return $this->createOrMerge($assessment->patient_id, $assessment->id, $type, $priority, $description);
     }
 
     /**
@@ -79,32 +55,108 @@ class RedFlagService
         RedFlagPriority $priority,
         string $description,
     ): RedFlag {
-        $redFlag = $this->redFlags->create([
-            'patient_id' => $patient->user_id,
-            'assessment_id' => null,
-            'type' => $type->value,
-            'description' => $description,
-            'priority' => $priority->value,
-            'assigned_to' => $this->defaultAssignee()?->id,
-            'status' => 'open',
+        return $this->createOrMerge($patient->user_id, null, $type, $priority, $description);
+    }
+
+    /**
+     * One open flag per (patient, type): a repeated signal while the first is
+     * still open raises the existing flag's priority instead of creating a
+     * duplicate. The patient row is locked first so concurrent signals are
+     * serialised; red_flags_open_per_patient_type_unique is the backstop.
+     */
+    private function createOrMerge(
+        string $patientId,
+        ?string $assessmentId,
+        RedFlagType $type,
+        RedFlagPriority $priority,
+        string $description,
+    ): RedFlag {
+        $flag = DB::transaction(function () use ($patientId, $assessmentId, $type, $priority, $description): RedFlag {
+            Patient::where('user_id', $patientId)->lockForUpdate()->first();
+            $existing = $this->openFlag($patientId, $type);
+
+            if ($existing) {
+                return $this->merge($existing, $assessmentId, $priority);
+            }
+
+            $created = $this->redFlags->create([
+                'patient_id' => $patientId,
+                'assessment_id' => $assessmentId,
+                'type' => $type->value,
+                'description' => $description,
+                'priority' => $priority->value,
+                'assigned_to' => $this->defaultAssignee()?->id,
+                'status' => 'open',
+            ]);
+
+            $created->wasRecentlyCreated = true;
+
+            return $created;
+        });
+
+        if ($flag->wasRecentlyCreated) {
+            $this->notifyRaised($flag);
+        }
+
+        Log::info('Red flag '.($flag->wasRecentlyCreated ? 'created' : 'merged'), [
+            'red_flag_id' => $flag->id,
+            'priority' => $flag->priority->value,
         ]);
 
+        return $flag;
+    }
+
+    private function openFlag(string $patientId, RedFlagType $type): ?RedFlag
+    {
+        return RedFlag::query()
+            ->where('patient_id', $patientId)
+            ->where('type', $type->value)
+            ->where('status', 'open')
+            ->lockForUpdate()
+            ->first();
+    }
+
+    private function merge(RedFlag $existing, ?string $assessmentId, RedFlagPriority $priority): RedFlag
+    {
+        $update = [];
+
+        if ($this->rank($priority) > $this->rank($existing->priority)) {
+            $update['priority'] = $priority->value;
+        }
+
+        if ($assessmentId !== null && $existing->assessment_id === null) {
+            $update['assessment_id'] = $assessmentId;
+        }
+
+        if ($update !== []) {
+            $this->redFlags->update($existing, $update);
+            $existing->refresh();
+        }
+
+        $existing->wasRecentlyCreated = false;
+
+        return $existing;
+    }
+
+    private function rank(RedFlagPriority $priority): int
+    {
+        return match ($priority) {
+            RedFlagPriority::LOW => 1,
+            RedFlagPriority::MEDIUM => 2,
+            RedFlagPriority::HIGH => 3,
+        };
+    }
+
+    private function notifyRaised(RedFlag $flag): void
+    {
         try {
-            $this->notifications->redFlagRaised($redFlag);
+            $this->notifications->redFlagRaised($flag);
         } catch (\Throwable $e) {
             Log::error('Red flag notification failed', [
-                'red_flag_id' => $redFlag->id,
+                'red_flag_id' => $flag->id,
                 'error' => $e->getMessage(),
             ]);
         }
-
-        Log::info('Red flag created', [
-            'red_flag_id' => $redFlag->id,
-            'patient_id' => $patient->user_id,
-            'priority' => $priority->value,
-        ]);
-
-        return $redFlag;
     }
 
     public function getPatientRedFlags(string $patientId): array

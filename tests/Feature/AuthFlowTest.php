@@ -59,6 +59,30 @@ class AuthFlowTest extends TestCase
         $this->assertCount(1, $this->sender->messages);
     }
 
+    public function test_register_rolls_back_when_the_otp_cannot_be_delivered(): void
+    {
+        $sender = new class implements WhatsAppSenderInterface
+        {
+            public bool $fail = true;
+
+            public function send(string $phoneNumber, string $message): bool
+            {
+                return ! $this->fail;
+            }
+        };
+        $this->app->instance(WhatsAppSenderInterface::class, $sender);
+
+        $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertStatus(422);
+        $this->assertDatabaseMissing('users', ['whatsapp_number' => '+963900000001']);
+
+        // Email is stored normalised, and re-used case-insensitively.
+        $sender->fail = false;
+        $this->postJson('/api/v1/auth/register', $this->registerPayload(['email' => '  Patient@Example.COM ']))->assertCreated();
+        $this->assertDatabaseHas('users', ['whatsapp_number' => '+963900000001', 'email' => 'patient@example.com']);
+        $this->postJson('/api/v1/auth/register', $this->registerPayload(['email' => 'PATIENT@example.com', 'whatsapp_number' => '+963900000002']))
+            ->assertStatus(422)->assertJsonValidationErrorFor('email');
+    }
+
     public function test_register_never_accepts_a_client_supplied_role(): void
     {
         $response = $this->postJson('/api/v1/auth/register', $this->registerPayload([

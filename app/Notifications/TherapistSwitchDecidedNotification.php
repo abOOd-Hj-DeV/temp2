@@ -23,6 +23,7 @@ class TherapistSwitchDecidedNotification extends Notification
             'kind' => 'therapist_switch',
             'switch_id' => $this->switch->id,
             'status' => $this->switch->status,
+            'therapist_decision' => $this->switch->therapist_decision,
             'new_therapist_id' => $this->switch->new_therapist_id,
         ];
     }

@@ -32,6 +32,9 @@ interface SessionRepositoryInterface
      */
     public function countNonCancelledForPatient(string $patientId): int;
 
+    /** Non-cancelled sessions of a patient dated within [$from, $to] (inclusive). */
+    public function countNonCancelledForPatientInRange(string $patientId, string $from, string $to): int;
+
     /**
      * Whether the therapist has a non-cancelled session at this exact slot.
      */

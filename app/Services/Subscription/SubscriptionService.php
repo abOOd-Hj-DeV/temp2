@@ -2,7 +2,6 @@
 
 namespace App\Services\Subscription;
 
-use App\Enums\SubscriptionType;
 use App\Exceptions\ConflictException;
 use App\Models\Patient;
 use App\Models\Payment;
@@ -11,6 +10,7 @@ use App\Repositories\Contracts\PaymentRepositoryInterface;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\Billing\PaymentReviewService;
+use App\Services\Package\PackageService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
@@ -25,6 +25,7 @@ class SubscriptionService
         private PaymentRepositoryInterface $payments,
         private PaymentReviewService $paymentReview,
         private AuditLogService $audit,
+        private PackageService $packages,
     ) {}
 
     /**
@@ -32,15 +33,16 @@ class SubscriptionService
      * The file lands on the configured disk (S3 in production) and a queue
      * job is dispatched so staff can review it manually.
      */
-    public function createWithProof(Patient $patient, string $type, UploadedFile $proof): array
+    public function createWithProof(Patient $patient, string $packageIdOrCode, UploadedFile $proof): array
     {
-        $type = SubscriptionType::from($type);
-        $price = (float) config("sakina.subscription_prices.{$type->value}");
+        $package = $this->packages->findPublished($packageIdOrCode)
+            ?? throw ValidationException::withMessages(['package_id' => 'The selected package is not available.']);
+        $price = (float) $package->price;
         $disk = config('sakina.uploads_disk', 'local');
         $path = $proof->store("payment-proofs/{$patient->user_id}", ['disk' => $disk]);
 
         try {
-            $result = DB::transaction(function () use ($patient, $type, $path, $price) {
+            $result = DB::transaction(function () use ($patient, $package, $path, $price) {
                 // Serialise concurrent submissions from the same patient.
                 Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
 
@@ -52,7 +54,11 @@ class SubscriptionService
 
                 $subscription = $this->subscriptions->create([
                     'patient_id' => $patient->user_id,
-                    'type' => $type->value,
+                    'type' => $package->code,
+                    'package_id' => $package->id,
+                    'sessions_total' => $package->number_of_sessions,
+                    'duration_days' => $package->duration_days,
+                    'daily_sessions_quota' => $package->daily_sessions_quota,
                     'start_date' => null, // dates are set on approval
                     'end_date' => null,
                     'price' => $price,
@@ -67,7 +73,7 @@ class SubscriptionService
                 );
 
                 $this->audit->record($patient->user_id, AuditLogService::SUBSCRIPTION_CREATED, $subscription->id, [
-                    'type' => $type->value,
+                    'package_id' => $package->id,
                     'price' => $price,
                     'payment_id' => $payment->id,
                 ]);
@@ -99,7 +105,11 @@ class SubscriptionService
     {
         return [
             'id' => $subscription->id,
-            'type' => $subscription->type?->value ?? $subscription->type,
+            'type' => $subscription->type,
+            'package_id' => $subscription->package_id,
+            'sessions_total' => $subscription->sessions_total,
+            'duration_days' => $subscription->duration_days,
+            'daily_sessions_quota' => $subscription->daily_sessions_quota,
             'start_date' => $subscription->start_date?->toDateString(),
             'end_date' => $subscription->end_date?->toDateString(),
             'price' => $subscription->price,

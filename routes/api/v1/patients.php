@@ -25,7 +25,7 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
         Route::get('/export-data', [PatientController::class, 'exportData'])->middleware('throttle:export')->name('data.export');
 
         Route::post('/assessment', [AssessmentController::class, 'store'])
-            ->middleware('throttle:20,1')->name('assessment.store');
+            ->middleware(['throttle:20,1', 'idempotent'])->name('assessment.store');
         Route::get('/assessment/history', [AssessmentController::class, 'history'])->name('assessment.history');
 
         Route::post('/mood', [MoodController::class, 'store'])->middleware('throttle:30,1')->name('mood.store');
@@ -37,6 +37,6 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])->gro
     Route::post('/mood', [MoodController::class, 'store'])->middleware('throttle:30,1');
     Route::get('/appointments', [PatientController::class, 'getAppointments']);
     Route::get('/dashboard', [PatientController::class, 'getDashboard']);
-    Route::post('/therapist/switch', [TherapistSwitchController::class, 'store'])->middleware('throttle:5,1');
+    Route::post('/therapist/switch', [TherapistSwitchController::class, 'store'])->middleware(['throttle:5,1', 'idempotent']);
     Route::get('/therapist/switch', [TherapistSwitchController::class, 'index']);
 });

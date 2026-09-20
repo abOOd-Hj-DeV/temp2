@@ -2,6 +2,7 @@
 
 namespace App\Services\Patient;
 
+use App\Models\Payment;
 use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
@@ -88,12 +89,57 @@ class PatientAccountService
             'sessions' => $patient
                 ? $patient->sessions()->get()->map(fn ($s) => [
                     'id' => $s->id,
+                    'therapist_id' => $s->therapist_id,
                     'session_date' => $s->session_date?->toDateString(),
+                    'session_time' => $s->session_time ? substr((string) $s->session_time, 0, 5) : null,
                     'medium' => $s->medium,
                     'status' => $s->status,
+                    'payment_status' => $s->payment_status,
                     'price' => $s->price,
+                    'summary' => $s->summary,
                 ])->all()
                 : [],
+            'mood_logs' => $patient
+                ? $patient->moodLogs()->orderBy('log_date')->get()->map(fn ($m) => [
+                    'log_date' => $m->log_date?->toDateString(),
+                    'score' => $m->score,
+                    'notes' => $m->notes,
+                ])->all()
+                : [],
+            'subscriptions' => $patient
+                ? $patient->subscriptions()->get()->map(fn ($s) => [
+                    'id' => $s->id,
+                    'type' => $s->type,
+                    'start_date' => $s->start_date?->toDateString(),
+                    'end_date' => $s->end_date?->toDateString(),
+                    'price' => $s->price,
+                    'verification_status' => $s->verification_status,
+                ])->all()
+                : [],
+            'payments' => $patient
+                ? Payment::query()
+                    ->where(fn ($q) => $q
+                        ->whereIn('subscription_id', $patient->subscriptions()->select('id'))
+                        ->orWhereIn('therapy_session_id', $patient->sessions()->select('id')))
+                    ->get()
+                    ->map(fn ($p) => [
+                        'id' => $p->id,
+                        'subscription_id' => $p->subscription_id,
+                        'therapy_session_id' => $p->therapy_session_id,
+                        'amount' => $p->amount,
+                        'status' => $p->status,
+                        'note' => $p->note,
+                        'reviewed_at' => $p->reviewed_at?->toISOString(),
+                        'created_at' => $p->created_at?->toISOString(),
+                    ])->all()
+                : [],
+            'notifications' => $user->notifications()->get()->map(fn ($n) => [
+                'id' => $n->id,
+                'type' => class_basename($n->type),
+                'data' => $n->data,
+                'read_at' => $n->read_at?->toISOString(),
+                'created_at' => $n->created_at?->toISOString(),
+            ])->all(),
         ];
     }
 }

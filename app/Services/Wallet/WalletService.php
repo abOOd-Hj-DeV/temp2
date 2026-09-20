@@ -34,8 +34,8 @@ class WalletService
     public function summary(Therapist $therapist): array
     {
         $rate = $this->commissionRate();
-        $earnedGross = $this->paidSessions($therapist)->where('status', SessionStatus::COMPLETED->value)->sum('price');
-        $pendingGross = $this->paidSessions($therapist)->where('status', '!=', SessionStatus::COMPLETED->value)->sum('price');
+        $earnedGross = $this->earnedSessions($therapist)->sum('price');
+        $pendingGross = (float) $this->paidSessions($therapist)->sum('price') - (float) $earnedGross;
 
         $earned = round((float) $earnedGross * (1 - $rate), 2);
         $pending = round((float) $pendingGross * (1 - $rate), 2);
@@ -52,8 +52,8 @@ class WalletService
             'withdrawn' => round($withdrawn, 2),
             'reserved' => round($reserved, 2),
             'available' => round(max(0, $earned - $withdrawn - $reserved), 2),
-            'min_withdrawal' => (float) config('sakina.min_withdrawal_amount', 50),
-            'completed_paid_sessions' => $this->paidSessions($therapist)->where('status', SessionStatus::COMPLETED->value)->count(),
+            'min_withdrawal' => (float) config('sakina.min_withdrawal_amount', 20),
+            'completed_paid_sessions' => $this->earnedSessions($therapist)->count(),
             'recent_withdrawals' => $therapist->withdrawals()->latest()->limit(10)->get()
                 ->map(fn (WalletWithdrawal $w) => $this->withdrawalToArray($w))->all(),
         ];
@@ -61,7 +61,7 @@ class WalletService
 
     public function requestWithdrawal(Therapist $therapist, float $amount, array $payoutDetails, User $actor): WalletWithdrawal
     {
-        $min = (float) config('sakina.min_withdrawal_amount', 50);
+        $min = (float) config('sakina.min_withdrawal_amount', 20);
 
         if ($amount < $min) {
             throw ValidationException::withMessages(['amount' => "Minimum withdrawal is {$min}."]);
@@ -152,6 +152,17 @@ class WalletService
             'reviewed_at' => $w->reviewed_at?->toISOString(),
             'created_at' => $w->created_at?->toISOString(),
         ];
+    }
+
+    /**
+     * Only sessions the patient (or a supervisor) confirmed attending are
+     * recognised as earnings; a therapist's own "completed" claim is not enough.
+     */
+    private function earnedSessions(Therapist $therapist)
+    {
+        return $this->paidSessions($therapist)
+            ->where('status', SessionStatus::COMPLETED->value)
+            ->whereNotNull('attendance_confirmed_at');
     }
 
     private function paidSessions(Therapist $therapist)

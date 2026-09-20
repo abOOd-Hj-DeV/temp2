@@ -39,6 +39,7 @@ class AuthService
 
     public function register(array $data): array
     {
+        $data['email'] = mb_strtolower(trim($data['email']));
         $existing = $this->users->findByWhatsapp($data['whatsapp_number']);
 
         if ($existing?->isVerified()) {
@@ -47,7 +48,9 @@ class AuthService
             ]);
         }
 
-        $user = DB::transaction(function () use ($existing, $data) {
+        $created = false;
+
+        $user = DB::transaction(function () use ($existing, $data, &$created) {
             if ($existing && $this->isUnverifiedExpired($existing)) {
                 $this->users->delete($existing);
                 $existing = null;
@@ -78,11 +81,22 @@ class AuthService
             ]);
 
             $user->assignRole(UserRole::PATIENT->value);
+            $created = true;
 
             return $user;
         });
 
-        $this->otp->send($user, OtpService::PURPOSE_REGISTRATION);
+        try {
+            $this->otp->send($user, OtpService::PURPOSE_REGISTRATION);
+        } catch (\Throwable $e) {
+            // No code could be delivered: do not leave a half-registered row
+            // holding the number/email hostage until the unverified TTL expires.
+            if ($created) {
+                $this->users->delete($user);
+            }
+
+            throw $e;
+        }
 
         return [
             'message' => __('Account created. Enter the verification code sent to your WhatsApp.'),
@@ -145,28 +159,41 @@ class AuthService
             ]);
         }
 
-        if (! $user->isVerified() || ! $user->is_active) {
+        $this->assertLoginable($user);
+
+        // The user row is locked while the token is minted so a concurrent
+        // anonymisation/deactivation either runs first (login is refused) or
+        // after (its revokeAllTokens() sees and deletes this token).
+        [$user, $tokens] = DB::transaction(function () use ($user): array {
+            $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            $this->assertLoginable($user);
+
+            $update = ['login_attempts' => 0, 'last_login' => now()];
+
+            // Logging back in during the grace period cancels scheduled deletion.
+            if ($user->deletion_scheduled_at !== null) {
+                $update['deletion_scheduled_at'] = null;
+                $this->audit->record($user, AuditLogService::ACCOUNT_DELETION_CANCELLED, $user->id);
+            }
+
+            $this->users->update($user, $update);
+            $this->audit->record($user, AuditLogService::LOGIN_SUCCEEDED, $user->id);
+
+            return [$user->refresh(), $this->issueToken($user)];
+        });
+
+        Cache::forget($this->lockoutKey($data['whatsapp_number']));
+
+        return array_merge(['message' => __('Login successful.'), 'user' => $user], $tokens);
+    }
+
+    private function assertLoginable(User $user): void
+    {
+        if (! $user->isVerified() || ! $user->is_active || $user->anonymized_at !== null) {
             throw ValidationException::withMessages([
                 'whatsapp_number' => __('Account is not verified. Please verify your WhatsApp number first.'),
             ]);
         }
-
-        $update = ['login_attempts' => 0, 'last_login' => now()];
-
-        // Logging back in during the grace period cancels scheduled deletion.
-        if ($user->deletion_scheduled_at !== null) {
-            $update['deletion_scheduled_at'] = null;
-            $this->audit->record($user, AuditLogService::ACCOUNT_DELETION_CANCELLED, $user->id);
-        }
-
-        $this->users->update($user, $update);
-        Cache::forget($this->lockoutKey($data['whatsapp_number']));
-        $this->audit->record($user, AuditLogService::LOGIN_SUCCEEDED, $user->id);
-
-        return array_merge(
-            ['message' => __('Login successful.'), 'user' => $user->refresh()],
-            $this->issueToken($user)
-        );
     }
 
     public function logout(User $user): array
@@ -233,20 +260,28 @@ class AuthService
             $this->invalidRefresh();
         }
 
-        // Single-use: the atomic claim guarantees two concurrent refreshes with
-        // the same token cannot both succeed.
-        $claimed = RefreshToken::whereKey($stored->id)
-            ->whereNull('used_at')
-            ->whereNull('revoked_at')
-            ->update(['used_at' => now()]);
+        return DB::transaction(function () use ($stored, $user): array {
+            $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
 
-        if ($claimed === 0) {
-            $this->invalidRefresh();
-        }
+            if (! $user->is_active || $user->anonymized_at !== null || ! $user->phone_verified_at) {
+                $this->invalidRefresh();
+            }
 
-        PersonalAccessToken::whereKey($stored->access_token_id)->delete();
+            // Single-use: the atomic claim guarantees two concurrent refreshes with
+            // the same token cannot both succeed.
+            $claimed = RefreshToken::whereKey($stored->id)
+                ->whereNull('used_at')
+                ->whereNull('revoked_at')
+                ->update(['used_at' => now()]);
 
-        return $this->issueToken($user, $stored->family_id);
+            if ($claimed === 0) {
+                $this->invalidRefresh();
+            }
+
+            PersonalAccessToken::whereKey($stored->access_token_id)->delete();
+
+            return $this->issueToken($user, $stored->family_id);
+        });
     }
 
     private function invalidRefresh(): never

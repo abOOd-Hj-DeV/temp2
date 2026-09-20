@@ -13,19 +13,28 @@ use App\Models\User;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
+use App\Services\RedFlagService;
 use Carbon\Carbon;
+use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Patient-initiated therapist change. The request is reviewed by staff;
- * on approval the patient is re-assigned and the new therapist's capacity
+ * Patient-initiated therapist change. The requested therapist accepts or
+ * declines first, then the Head Master (clinical supervisor/admin) gives the
+ * final decision; on approval the patient is re-assigned and the new therapist's capacity
  * is re-checked under a row lock. Existing sessions with the previous
  * therapist are left untouched (they can be cancelled independently).
  */
 class TherapistSwitchService
 {
+    public const THERAPIST_ACCEPTED = 'accepted';
+
+    public const THERAPIST_DECLINED = 'declined';
+
     public function __construct(
         private SubscriptionRepositoryInterface $subscriptions,
         private NotificationService $notifications,
@@ -67,27 +76,35 @@ class TherapistSwitchService
             throw ValidationException::withMessages(['new_therapist_id' => 'The selected therapist is not accepting new clients.']);
         }
 
-        $switch = DB::transaction(function () use ($patient, $target, $subscription, $reason) {
-            $open = TherapistSwitch::where('patient_id', $patient->user_id)
-                ->where('status', 'requested')
-                ->lockForUpdate()
-                ->exists();
+        try {
+            $switch = DB::transaction(function () use ($patient, $target, $subscription, $reason) {
+                // Serialise per patient; therapist_switches_requested_unique is the backstop.
+                Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
 
-            if ($open) {
-                throw new ConflictException('You already have a pending therapist switch request.');
-            }
+                $open = TherapistSwitch::where('patient_id', $patient->user_id)
+                    ->where('status', 'requested')
+                    ->exists();
 
-            return TherapistSwitch::create([
-                'id' => (string) Str::uuid(),
-                'patient_id' => $patient->user_id,
-                'old_therapist_id' => $patient->therapist_id,
-                'new_therapist_id' => $target->user_id,
-                'subscription_id' => $subscription->id,
-                'reason' => $reason,
-                'timestamp' => now(),
-                'status' => 'requested',
-            ]);
-        });
+                if ($open) {
+                    throw new ConflictException('You already have a pending therapist switch request.');
+                }
+
+                return TherapistSwitch::create([
+                    'id' => (string) Str::uuid(),
+                    'patient_id' => $patient->user_id,
+                    'old_therapist_id' => $patient->therapist_id,
+                    'new_therapist_id' => $target->user_id,
+                    'subscription_id' => $subscription->id,
+                    'reason' => $reason,
+                    'timestamp' => now(),
+                    'status' => 'requested',
+                ]);
+            });
+        } catch (UniqueConstraintViolationException) {
+            throw new ConflictException('You already have a pending therapist switch request.');
+        }
+
+        $this->notifications->therapistSwitchRequested($switch);
 
         $this->audit->record($actor, AuditLogService::THERAPIST_SWITCH_REQUESTED, $switch->id, [
             'from' => $switch->old_therapist_id, 'to' => $switch->new_therapist_id,
@@ -123,6 +140,52 @@ class TherapistSwitchService
             });
     }
 
+    /**
+     * Step 1: the requested therapist accepts or declines taking the patient.
+     * Declining closes the request; accepting hands it to the Head Master
+     * (clinical supervisor / admin) for the final decision.
+     */
+    public function therapistDecide(TherapistSwitch $switch, bool $accept, User $therapist, ?string $note = null): TherapistSwitch
+    {
+        $switch = DB::transaction(function () use ($switch, $accept, $therapist, $note) {
+            $locked = TherapistSwitch::whereKey($switch->id)->lockForUpdate()->firstOrFail();
+
+            if ($locked->new_therapist_id !== $therapist->id) {
+                throw new AuthorizationException('This switch request is not addressed to you.');
+            }
+
+            if ($locked->status !== 'requested' || $locked->therapist_decision !== null) {
+                throw new ConflictException('This switch request was already answered.');
+            }
+
+            $locked->update([
+                'therapist_decision' => $accept ? self::THERAPIST_ACCEPTED : self::THERAPIST_DECLINED,
+                'therapist_decided_at' => now(),
+                'status' => $accept ? 'requested' : 'rejected',
+                'decided_by' => $accept ? null : $therapist->id,
+                'decided_at' => $accept ? null : now(),
+            ]);
+
+            $this->audit->record($therapist, AuditLogService::THERAPIST_SWITCH_THERAPIST_DECIDED, $locked->id, [
+                'accepted' => $accept, 'note' => $note,
+            ]);
+
+            return $locked->refresh();
+        });
+
+        if ($switch->status === 'rejected') {
+            $this->notifications->therapistSwitchDecided($switch);
+        } else {
+            $this->notifications->therapistSwitchAwaitingSupervisor($switch, $this->supervisors());
+        }
+
+        return $switch;
+    }
+
+    /**
+     * Step 2: Head Master / admin final decision. Only reachable after the
+     * target therapist accepted; exactly one decision wins under the row lock.
+     */
     public function decide(TherapistSwitch $switch, bool $approve, User $admin, ?string $note = null): TherapistSwitch
     {
         $switch = DB::transaction(function () use ($switch, $approve, $admin, $note) {
@@ -130,6 +193,10 @@ class TherapistSwitchService
 
             if ($locked->status !== 'requested') {
                 throw new ConflictException('This switch request was already decided.');
+            }
+
+            if ($locked->therapist_decision !== self::THERAPIST_ACCEPTED) {
+                throw ValidationException::withMessages(['switch' => 'The requested therapist has not accepted this patient yet.']);
             }
 
             if ($approve) {
@@ -148,10 +215,15 @@ class TherapistSwitchService
                     throw ValidationException::withMessages(['therapist' => 'Target therapist has reached their client limit.']);
                 }
 
+                Patient::whereKey($locked->patient_id)->lockForUpdate()->firstOrFail();
                 Patient::whereKey($locked->patient_id)->update(['therapist_id' => $target->user_id]);
             }
 
-            $locked->update(['status' => $approve ? 'approved' : 'rejected']);
+            $locked->update([
+                'status' => $approve ? 'approved' : 'rejected',
+                'decided_by' => $admin->id,
+                'decided_at' => now(),
+            ]);
 
             $this->audit->record($admin, AuditLogService::THERAPIST_SWITCH_DECIDED, $locked->id, [
                 'approved' => $approve, 'note' => $note,
@@ -165,6 +237,14 @@ class TherapistSwitchService
         return $switch;
     }
 
+    private function supervisors(): Collection
+    {
+        return User::query()
+            ->whereIn('role', array_map(fn ($r) => $r->value, RedFlagService::CLINICAL_STAFF_ROLES))
+            ->where('is_active', true)
+            ->get();
+    }
+
     public function toArray(TherapistSwitch $switch): array
     {
         return [
@@ -175,6 +255,9 @@ class TherapistSwitchService
             'subscription_id' => $switch->subscription_id,
             'reason' => $switch->reason,
             'status' => $switch->status,
+            'therapist_decision' => $switch->therapist_decision,
+            'therapist_decided_at' => $switch->therapist_decided_at?->toISOString(),
+            'decided_at' => $switch->decided_at?->toISOString(),
             'requested_at' => $switch->timestamp?->toISOString(),
         ];
     }

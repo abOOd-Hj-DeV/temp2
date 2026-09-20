@@ -5,7 +5,6 @@ namespace App\Services\Billing;
 use App\Enums\PaymentReviewStatus;
 use App\Enums\PaymentStatus;
 use App\Enums\SessionStatus;
-use App\Enums\SubscriptionType;
 use App\Exceptions\ConflictException;
 use App\Jobs\ReviewPaymentProofJob;
 use App\Models\Payment;
@@ -120,6 +119,10 @@ class PaymentReviewService
                 throw new ConflictException('This payment was already reviewed.');
             }
 
+            if ($approve) {
+                $this->assertProofExists($locked);
+            }
+
             $this->payments->update($locked, [
                 'status' => $approve ? PaymentReviewStatus::APPROVED->value : PaymentReviewStatus::REJECTED->value,
                 'reviewer_id' => $reviewer->id,
@@ -160,6 +163,22 @@ class PaymentReviewService
         return $payment->refresh();
     }
 
+    /**
+     * Money must never be recognised against a proof that is empty, was never
+     * written, or has since been removed from the private disk.
+     */
+    private function assertProofExists(Payment $payment): void
+    {
+        $path = trim((string) $payment->proof_file_path);
+        $disk = config('sakina.uploads_disk', 'local');
+
+        if ($path === '' || str_contains($path, '..') || ! Storage::disk($disk)->exists($path)) {
+            throw ValidationException::withMessages([
+                'payment' => 'The payment proof file is missing; reject the payment and ask the patient to re-upload.',
+            ]);
+        }
+    }
+
     private function applyToSubscription(Payment $payment, bool $approved): void
     {
         $subscription = Subscription::whereKey($payment->subscription_id)->lockForUpdate()->first();
@@ -168,18 +187,24 @@ class PaymentReviewService
             return;
         }
 
+        if ($subscription->verification_status !== 'pending') {
+            throw new ConflictException("The subscription is already {$subscription->verification_status}.");
+        }
+
         if (! $approved) {
             $this->subscriptions->update($subscription, ['verification_status' => 'rejected']);
 
             return;
         }
 
-        $weeks = SubscriptionType::from($subscription->type->value)->durationInWeeks();
+        $days = $subscription->duration_days
+            ?? $subscription->package?->duration_days
+            ?? throw new ConflictException('The subscription has no duration; it cannot be activated.');
 
         $this->subscriptions->update($subscription, [
             'verification_status' => 'approved',
             'start_date' => now()->toDateString(),
-            'end_date' => now()->addWeeks($weeks)->toDateString(),
+            'end_date' => now()->addDays($days)->toDateString(),
         ]);
 
         // Point the patient's profile at the live subscription.

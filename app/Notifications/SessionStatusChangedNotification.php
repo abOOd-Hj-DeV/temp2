@@ -15,6 +15,7 @@ class SessionStatusChangedNotification extends Notification
         private TherapySession $session,
         private SessionStatus $from,
         private SessionStatus $to,
+        private string $kind = 'session_status_changed',
     ) {}
 
     public function via(object $notifiable): array
@@ -25,11 +26,13 @@ class SessionStatusChangedNotification extends Notification
     public function toDatabase(object $notifiable): array
     {
         return [
-            'kind' => 'session_status_changed',
+            'kind' => $this->kind,
             'session_id' => $this->session->id,
             'from_status' => $this->from->value,
             'to_status' => $this->to->value,
             'session_date' => $this->session->session_date?->toDateString(),
+            'reschedule_date' => $this->session->reschedule_date?->toDateString(),
+            'reschedule_time' => $this->session->reschedule_time ? substr((string) $this->session->reschedule_time, 0, 5) : null,
         ];
     }
 }

@@ -8,7 +8,6 @@ use App\Models\Patient;
 use App\Services\Mood\MoodService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\ValidationException;
 
 class MoodController extends Controller
 {
@@ -32,12 +31,6 @@ class MoodController extends Controller
 
     private function patient(Request $request): Patient
     {
-        $patient = $request->user()->patient;
-
-        if (! $patient) {
-            throw ValidationException::withMessages(['patient' => 'Complete your profile before logging mood.']);
-        }
-
-        return $patient;
+        return $this->patientOf($request);
     }
 }

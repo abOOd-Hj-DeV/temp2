@@ -9,7 +9,9 @@ class StoreSubscriptionRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'type' => 'required|in:4_weeks,8_weeks',
+            // Package id (preferred) or legacy code such as "4_weeks".
+            'package_id' => 'required_without:type|nullable|uuid',
+            'type' => 'required_without:package_id|nullable|string|max:64',
             'proof' => 'required|file|mimes:jpg,jpeg,png,pdf|max:5120',
         ];
     }

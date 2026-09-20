@@ -25,7 +25,7 @@ class TherapistApprovalController extends Controller
         $request->validate(['status' => 'nullable|in:pending,approved,rejected']);
         $status = $request->input('status', 'pending');
 
-        $paginator = $this->therapists->listByApprovalStatus($status, (int) $request->input('per_page', 15));
+        $paginator = $this->therapists->listByApprovalStatus($status, $this->perPage($request));
 
         return response()->json([
             'data' => collect($paginator->items())->map(fn ($t) => $this->therapistService->toArray($t) + [

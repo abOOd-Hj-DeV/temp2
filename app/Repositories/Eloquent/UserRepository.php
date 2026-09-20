@@ -32,12 +32,12 @@ class UserRepository implements UserRepositoryInterface
 
     public function findByEmail(string $email): ?User
     {
-        return User::where('email', $email)->first();
+        return User::whereRaw('lower(email) = ?', [mb_strtolower(trim($email))])->first();
     }
 
     public function findActiveByEmail(string $email): ?User
     {
-        return User::where('email', $email)
+        return User::whereRaw('lower(email) = ?', [mb_strtolower(trim($email))])
             ->where('is_active', true)
             ->whereNotNull('phone_verified_at')
             ->first();

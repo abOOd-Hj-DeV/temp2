@@ -40,7 +40,7 @@ class TherapistController extends Controller
 
         $filters['accepting_clients'] = filter_var($filters['accepting_clients'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
-        $paginator = $this->therapistService->listTherapists($filters, (int) $request->input('per_page', 15));
+        $paginator = $this->therapistService->listTherapists($filters, $this->perPage($request));
 
         return response()->json([
             'data' => collect($paginator->items())->map(fn ($t) => $this->therapistService->toArray($t)),
@@ -82,7 +82,7 @@ class TherapistController extends Controller
      */
     public function dashboard(Request $request): JsonResponse
     {
-        return response()->json($this->therapistService->dashboard($request->user()->therapist));
+        return response()->json($this->therapistService->dashboard($this->therapistOf($request)));
     }
 
     /**
@@ -91,7 +91,7 @@ class TherapistController extends Controller
     public function updateSettings(UpdateTherapistSettingsRequest $request): JsonResponse
     {
         $therapist = $this->therapistService->updateSettings(
-            $request->user()->therapist,
+            $this->therapistOf($request),
             $request->validated()
         );
 
@@ -107,7 +107,7 @@ class TherapistController extends Controller
     public function submitApproval(SubmitApprovalRequest $request): JsonResponse
     {
         $therapist = $this->therapistService->submitForApproval(
-            $request->user()->therapist,
+            $this->therapistOf($request),
             $request->file('license')
         );
 
@@ -124,7 +124,7 @@ class TherapistController extends Controller
     {
         $paginator = $this->sessionService->forTherapist(
             $request->user()->id,
-            (int) $request->input('per_page', 15)
+            $this->perPage($request)
         );
 
         return response()->json([
@@ -141,7 +141,7 @@ class TherapistController extends Controller
 
     public function clients(Request $request): JsonResponse
     {
-        $paginator = $this->clients->list($request->user()->therapist, (int) $request->input('per_page', 15));
+        $paginator = $this->clients->list($this->therapistOf($request), $this->perPage($request));
 
         return response()->json([
             'data' => collect($paginator->items())->map(fn ($p) => $this->clients->clientToArray($p)),
@@ -155,12 +155,12 @@ class TherapistController extends Controller
 
     public function client(Request $request, string $id): JsonResponse
     {
-        return response()->json($this->clients->show($request->user()->therapist, $id));
+        return response()->json($this->clients->show($this->therapistOf($request), $id));
     }
 
     public function clientNotes(Request $request, string $id): JsonResponse
     {
-        return response()->json($this->clients->notes($request->user()->therapist, $id));
+        return response()->json($this->clients->notes($this->therapistOf($request), $id));
     }
 
     public function addClientNote(Request $request, string $id): JsonResponse
@@ -170,7 +170,7 @@ class TherapistController extends Controller
             'session_id' => 'nullable|uuid',
         ]);
 
-        $note = $this->clients->addNote($request->user()->therapist, $id, $data['body'], $data['session_id'] ?? null);
+        $note = $this->clients->addNote($this->therapistOf($request), $id, $data['body'], $data['session_id'] ?? null);
 
         return response()->json(['message' => 'Note added.', 'note' => $this->clients->noteToArray($note)], 201);
     }
@@ -179,7 +179,7 @@ class TherapistController extends Controller
 
     public function wallet(Request $request): JsonResponse
     {
-        return response()->json($this->wallet->summary($request->user()->therapist));
+        return response()->json($this->wallet->summary($this->therapistOf($request)));
     }
 
     public function withdraw(Request $request): JsonResponse
@@ -193,7 +193,7 @@ class TherapistController extends Controller
         ]);
 
         $withdrawal = $this->wallet->requestWithdrawal(
-            $request->user()->therapist,
+            $this->therapistOf($request),
             (float) $data['amount'],
             $data['payout_details'],
             $request->user(),
@@ -212,6 +212,6 @@ class TherapistController extends Controller
             'to' => 'nullable|date_format:Y-m-d|after_or_equal:from',
         ]);
 
-        return response()->json($this->reports->build($request->user()->therapist, $data['from'] ?? null, $data['to'] ?? null));
+        return response()->json($this->reports->build($this->therapistOf($request), $data['from'] ?? null, $data['to'] ?? null));
     }
 }

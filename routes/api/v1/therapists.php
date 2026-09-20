@@ -2,6 +2,7 @@
 
 use App\Enums\UserRole;
 use App\Http\Controllers\Api\V1\TherapistController;
+use App\Http\Controllers\Api\V1\TherapistSwitchController;
 use Illuminate\Support\Facades\Route;
 
 // Patient-facing therapist browsing (any authenticated, verified user).
@@ -30,8 +31,12 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
             Route::post('/clients/{id}/notes', [TherapistController::class, 'addClientNote'])->whereUuid('id');
 
             Route::get('/wallet', [TherapistController::class, 'wallet']);
-            Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware('throttle:5,1');
+            Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware(['throttle:5,1', 'idempotent']);
             Route::get('/reports', [TherapistController::class, 'reports']);
+            // Step 1 of a patient's therapist switch: the requested therapist answers.
+            Route::get('/me/switch-requests', [TherapistSwitchController::class, 'incoming']);
+            Route::post('/me/switch-requests/{switch}/decide', [TherapistSwitchController::class, 'therapistDecide'])
+                ->whereUuid('switch')->middleware('idempotent');
         });
     });
 
@@ -43,6 +48,6 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::THERAPIST->value, 'th
     Route::get('/clients', [TherapistController::class, 'clients']);
     Route::get('/clients/{id}', [TherapistController::class, 'client'])->whereUuid('id');
     Route::get('/wallet', [TherapistController::class, 'wallet']);
-    Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware('throttle:5,1');
+    Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware(['throttle:5,1', 'idempotent']);
     Route::get('/reports', [TherapistController::class, 'reports']);
 });

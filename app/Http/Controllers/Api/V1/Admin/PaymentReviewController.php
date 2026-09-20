@@ -20,7 +20,7 @@ class PaymentReviewController extends Controller
      */
     public function pending(Request $request): JsonResponse
     {
-        $paginator = $this->paymentReview->pending((int) $request->input('per_page', 15));
+        $paginator = $this->paymentReview->pending($this->perPage($request));
 
         return response()->json([
             'data' => collect($paginator->items())->map(fn ($p) => $this->paymentReview->toArray($p)),

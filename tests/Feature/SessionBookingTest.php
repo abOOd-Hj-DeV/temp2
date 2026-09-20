@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Patient;
 use App\Models\Subscription;
 use App\Models\Therapist;
+use App\Models\TherapySession;
 use App\Models\User;
 use App\Services\Messaging\WhatsAppSenderInterface;
 use Database\Seeders\RolePermissionSeeder;
@@ -214,6 +215,15 @@ class SessionBookingTest extends TestCase
             ->assertStatus(422);
 
         $this->travelTo(now()->addDays(2));
+        // Nor without the patient's attendance confirmation (no fabricated earnings).
+        $this->postJson("/api/v1/sessions/{$id}/complete", ['summary' => 'went well'])
+            ->assertStatus(422)->assertJsonValidationErrorFor('attendance');
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/attendance")->assertOk();
+        $this->postJson("/api/v1/sessions/{$id}/attendance")->assertStatus(409);
+
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
         $this->postJson("/api/v1/sessions/{$id}/complete", ['summary' => 'went well'])
             ->assertOk()->assertJsonPath('session.status', 'completed');
 
@@ -254,5 +264,66 @@ class SessionBookingTest extends TestCase
     public function test_guest_cannot_book(): void
     {
         $this->book()->assertUnauthorized();
+    }
+
+    public function test_reschedule_requires_therapist_approval_and_keeps_original_slot_until_then(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $id = $this->book()->assertCreated()->json('session.id');
+
+        $newDate = now()->addDays(3)->toDateString();
+
+        // A stranger patient cannot touch it.
+        $stranger = $this->makeUser('patient', '+963900000077');
+        Patient::create(['user_id' => $stranger->id, 'full_name' => 'S', 'age' => 25, 'gender' => 'other', 'language' => 'en']);
+        Sanctum::actingAs($stranger, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/reschedule", ['session_date' => $newDate, 'session_time' => '11:00'])
+            ->assertForbidden();
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        // Outside availability -> 422; valid -> 202 and the booked slot is unchanged.
+        $this->postJson("/api/v1/sessions/{$id}/reschedule", ['session_date' => $newDate, 'session_time' => '15:00'])
+            ->assertStatus(422);
+        $this->postJson("/api/v1/sessions/{$id}/reschedule", ['session_date' => $newDate, 'session_time' => '11:00'])
+            ->assertStatus(202)->assertJsonPath('session.reschedule.date', $newDate);
+        $this->postJson("/api/v1/sessions/{$id}/reschedule", ['session_date' => $newDate, 'session_time' => '11:30'])
+            ->assertStatus(409);
+        $this->assertSame($this->date, TherapySession::findOrFail($id)->session_date->toDateString());
+        $this->assertSame('10:00', substr(TherapySession::findOrFail($id)->session_time, 0, 5));
+
+        // The original slot is still reserved for the therapist.
+        $this->book(['session_time' => '10:00'])->assertStatus(422);
+
+        // Only the owning therapist decides.
+        $other = $this->makeUser('therapist', '+963900000078');
+        Therapist::create(['user_id' => $other->id, 'full_name' => 'Dr. O', 'specialty' => 'x', 'country' => 'DE', 'languages' => ['en'], 'approval_status' => 'approved']);
+        Sanctum::actingAs($other, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/reschedule/decide", ['action' => 'approve'])->assertStatus(422);
+
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/reschedule/decide", ['action' => 'reject'])
+            ->assertOk()->assertJsonPath('session.reschedule', null);
+        $this->assertSame($this->date, TherapySession::findOrFail($id)->session_date->toDateString());
+        $this->assertDatabaseHas('therapy_sessions', ['id' => $id, 'reschedule_date' => null]);
+        // Nothing left to decide.
+        $this->postJson("/api/v1/sessions/{$id}/reschedule/decide", ['action' => 'approve'])->assertStatus(409);
+
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/reschedule", ['session_date' => $newDate, 'session_time' => '11:00'])->assertStatus(202);
+
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/reschedule/decide", ['action' => 'approve'])
+            ->assertOk()->assertJsonPath('session.session_date', $newDate);
+        $moved = TherapySession::findOrFail($id);
+        $this->assertSame($newDate, $moved->session_date->toDateString());
+        $this->assertSame('11:00', substr($moved->session_time, 0, 5));
+        $this->assertNull($moved->reschedule_date);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'session.reschedule_decided', 'entity_id' => $id]);
+
+        // Attendance cannot be confirmed before the (new) start time; therapist cannot self-confirm.
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/attendance")->assertStatus(422);
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/attendance")->assertForbidden();
     }
 }

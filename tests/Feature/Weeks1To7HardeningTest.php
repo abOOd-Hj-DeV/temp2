@@ -246,6 +246,19 @@ class Weeks1To7HardeningTest extends TestCase
         $this->assertDatabaseHas('red_flags', ['patient_id' => $this->patient->user_id, 'type' => 'low_mood']);
     }
 
+    public function test_historical_mood_backfill_does_not_raise_a_current_streak_alert(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+
+        // A low run that ended five days ago is history, not a live signal (C-010).
+        foreach ([5, 6, 7] as $ago) {
+            $this->postJson('/api/v1/mood', ['score' => 1, 'log_date' => now()->subDays($ago)->toDateString()])->assertCreated();
+        }
+
+        $this->assertDatabaseMissing('red_flags', ['patient_id' => $this->patient->user_id, 'type' => 'low_mood']);
+        $this->assertSame(0, $this->getJson('/api/v1/patients/mood/chart?days=14')->json('summary.current_low_streak'));
+    }
+
     // ---------------------------------------------------------- therapists
 
     public function test_unapproved_therapist_is_blocked_from_operational_endpoints(): void
@@ -341,13 +354,21 @@ class Weeks1To7HardeningTest extends TestCase
         );
 
         $this->travelTo(now()->parse($this->date.' 10:00')->addHour());
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$session->id}/attendance")->assertOk();
+
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
         $this->postJson("/api/v1/sessions/{$session->id}/report", ['summary' => 'Patient engaged well; homework assigned.'])
             ->assertOk()->assertJsonPath('session.status', 'completed');
+        // Editing a completed report is an audited revision.
+        $this->postJson("/api/v1/sessions/{$session->id}/report", ['summary' => 'Patient engaged well; homework assigned; revised.'])
+            ->assertOk()->assertJsonPath('session.report_revision', 1);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'session.report_revised', 'entity_id' => $session->id]);
 
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
         $this->getJson("/api/v1/patients/post-session/{$session->id}")->assertOk()
             ->assertJsonPath('completed', true)
-            ->assertJsonPath('session.summary', 'Patient engaged well; homework assigned.');
+            ->assertJsonPath('session.summary', 'Patient engaged well; homework assigned; revised.');
     }
 
     public function test_therapist_client_endpoints_scope_to_own_clients(): void
@@ -392,9 +413,23 @@ class Weeks1To7HardeningTest extends TestCase
 
         Sanctum::actingAs($this->therapistUser, ['*'], 'api');
         $this->postJson("/api/v1/admin/therapist-switches/{$switchId}/review", ['action' => 'approve'])->assertForbidden();
+        // The current therapist is not the addressee of the request.
+        $this->postJson("/api/v1/therapists/me/switch-requests/{$switchId}/decide", ['action' => 'accept'])->assertForbidden();
+
+        // Head Master cannot decide before the requested therapist accepted.
+        Sanctum::actingAs($this->admin, ['*'], 'api');
+        $this->postJson("/api/v1/admin/therapist-switches/{$switchId}/review", ['action' => 'approve'])
+            ->assertUnprocessable()->assertJsonValidationErrorFor('switch');
+
+        Sanctum::actingAs($targetUser, ['*'], 'api');
+        $this->getJson('/api/v1/therapists/me/switch-requests')->assertOk()->assertJsonCount(1, 'data');
+        $this->postJson("/api/v1/therapists/me/switch-requests/{$switchId}/decide", ['action' => 'accept'])
+            ->assertOk()->assertJsonPath('data.therapist_decision', 'accepted');
+        $this->postJson("/api/v1/therapists/me/switch-requests/{$switchId}/decide", ['action' => 'decline'])->assertStatus(409);
 
         Sanctum::actingAs($this->admin, ['*'], 'api');
         $this->postJson("/api/v1/admin/therapist-switches/{$switchId}/review", ['action' => 'approve'])->assertOk();
+        $this->postJson("/api/v1/admin/therapist-switches/{$switchId}/review", ['action' => 'reject'])->assertStatus(409);
         $this->assertSame($target->user_id, $this->patient->refresh()->therapist_id);
     }
 
@@ -476,7 +511,7 @@ class Weeks1To7HardeningTest extends TestCase
         TherapySession::create([
             'patient_id' => $this->patient->user_id, 'therapist_id' => $this->therapist->user_id,
             'session_date' => now()->subDay()->toDateString(), 'session_time' => '10:00', 'status' => 'completed',
-            'medium' => 'zoom', 'price' => 100, 'payment_status' => 'paid',
+            'medium' => 'zoom', 'price' => 100, 'payment_status' => 'paid', 'attendance_confirmed_at' => now()->subDay(),
         ]);
         TherapySession::create([
             'patient_id' => $this->patient->user_id, 'therapist_id' => $this->therapist->user_id,

@@ -19,10 +19,13 @@ class TherapistSwitch extends Model
     protected $fillable = [
         'id', 'patient_id', 'old_therapist_id', 'new_therapist_id',
         'subscription_id', 'reason', 'timestamp', 'status',
+        'therapist_decision', 'therapist_decided_at', 'decided_by', 'decided_at',
     ];
 
     protected $casts = [
         'timestamp' => 'datetime',
+        'therapist_decided_at' => 'datetime',
+        'decided_at' => 'datetime',
     ];
 
     /**
