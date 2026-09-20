@@ -104,7 +104,7 @@ class TherapistSwitchService
             throw new ConflictException('You already have a pending therapist switch request.');
         }
 
-        $this->notifications->therapistSwitchRequested($switch);
+        $this->notifications->deliver('therapistSwitchRequested', $switch);
 
         $this->audit->record($actor, AuditLogService::THERAPIST_SWITCH_REQUESTED, $switch->id, [
             'from' => $switch->old_therapist_id, 'to' => $switch->new_therapist_id,
@@ -174,9 +174,9 @@ class TherapistSwitchService
         });
 
         if ($switch->status === 'rejected') {
-            $this->notifications->therapistSwitchDecided($switch);
+            $this->notifications->deliver('therapistSwitchDecided', $switch);
         } else {
-            $this->notifications->therapistSwitchAwaitingSupervisor($switch, $this->supervisors());
+            $this->notifications->deliver('therapistSwitchAwaitingSupervisor', $switch, $this->supervisors());
         }
 
         return $switch;
@@ -232,7 +232,7 @@ class TherapistSwitchService
             return $locked->refresh();
         });
 
-        $this->notifications->therapistSwitchDecided($switch);
+        $this->notifications->deliver('therapistSwitchDecided', $switch);
 
         return $switch;
     }

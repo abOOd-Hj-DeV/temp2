@@ -4,10 +4,13 @@ namespace App\Http\Middleware;
 
 use App\Models\IdempotencyKey as StoredKey;
 use Closure;
+use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -19,12 +22,20 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * The header is optional so existing clients keep working; every route that
  * creates money- or clinical-state should carry this middleware.
+ *
+ * A 5xx releases the key only while nothing was committed; once the handler
+ * has committed a transaction the key is kept (and the 5xx recorded) so a
+ * client retry cannot create a second primary effect.
  */
 class IdempotencyKey
 {
     public const HEADER = 'Idempotency-Key';
 
     private const TTL_HOURS = 24;
+
+    private const COMMITTED_ATTR = 'idempotency.committed';
+
+    private static bool $listening = false;
 
     public function handle(Request $request, Closure $next): Response
     {
@@ -55,12 +66,22 @@ class IdempotencyKey
             return $this->replay($user->id, $key, $route, $hash);
         }
 
+        $this->trackCommits($request);
+
         $response = $next($request);
 
         if ($response->getStatusCode() >= 500) {
-            $stored->delete();
+            if (! $request->attributes->get(self::COMMITTED_ATTR, false)) {
+                $stored->delete();
 
-            return $response;
+                return $response;
+            }
+
+            Log::critical('Idempotent request failed after commit; key retained to block a second side effect', [
+                'user_id' => $user->id,
+                'route' => $route,
+                'status' => $response->getStatusCode(),
+            ]);
         }
 
         $stored->forceFill([
@@ -70,6 +91,23 @@ class IdempotencyKey
         ])->save();
 
         return $response;
+    }
+
+    private function trackCommits(Request $request): void
+    {
+        $request->attributes->set(self::COMMITTED_ATTR, false);
+
+        if (self::$listening) {
+            return;
+        }
+
+        self::$listening = true;
+
+        Event::listen(TransactionCommitted::class, function (TransactionCommitted $event) {
+            if ($event->connection->transactionLevel() === 0) {
+                app('request')->attributes->set(self::COMMITTED_ATTR, true);
+            }
+        });
     }
 
     private function replay(string $userId, string $key, string $route, string $hash): Response

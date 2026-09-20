@@ -171,11 +171,13 @@ class SubscriptionPaymentTest extends TestCase
         ]);
 
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
-        $sessionId = $this->postJson('/api/v1/sessions/book', [
+        $book = fn (string $time) => $this->postJson('/api/v1/sessions/book', [
             'therapist_id' => $therapistUser->id,
             'session_date' => now()->addDay()->toDateString(),
-            'session_time' => '10:00', 'medium' => 'meet',
-        ])->assertCreated()->json('session.id');
+            'session_time' => $time, 'medium' => 'meet',
+        ]);
+        $book('10:00')->assertCreated()->assertJsonPath('session.payment_status', 'free'); // free initial
+        $sessionId = $book('11:00')->assertCreated()->assertJsonPath('session.payment_status', 'pending')->json('session.id');
 
         $res = $this->postJson("/api/v1/sessions/{$sessionId}/proof", [
             'proof' => UploadedFile::fake()->image('pay.png'),
@@ -198,8 +200,8 @@ class SubscriptionPaymentTest extends TestCase
         $this->assertDatabaseHas('therapy_sessions', [
             'id' => $sessionId, 'payment_status' => 'paid', 'status' => 'confirmed',
         ]);
-        // booked(1) + reviewed(1) + status-changed(1)
-        $this->assertSame(3, $this->patientUser->notifications()->count());
+        // booked(2) + reviewed(1) + status-changed(1)
+        $this->assertSame(4, $this->patientUser->notifications()->count());
     }
 
     public function test_patient_cannot_review_payments(): void

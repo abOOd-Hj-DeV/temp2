@@ -226,7 +226,7 @@ class TherapistService
             return $therapist->refresh();
         });
 
-        $this->notifications->therapistApprovalDecided($therapist);
+        $this->notifications->deliver('therapistApprovalDecided', $therapist, $note);
 
         return $therapist;
     }

@@ -53,7 +53,8 @@ class TherapistReportService
                 'completed' => (int) ($byStatus[SessionStatus::COMPLETED->value] ?? 0),
                 'cancelled' => $cancelled,
                 'cancellation_rate' => $total > 0 ? round($cancelled / $total, 3) : 0,
-                'free_initial' => (int) (clone $base)->where('payment_status', PaymentStatus::FREE->value)->count(),
+                'free_initial' => (int) (clone $base)->where('is_initial', true)->where('payment_status', PaymentStatus::FREE->value)->count(),
+                'package_covered' => (int) (clone $base)->whereNotNull('subscription_id')->count(),
             ],
             'clients' => [
                 'distinct' => (int) (clone $base)->where('status', '!=', SessionStatus::CANCELLED->value)->distinct('patient_id')->count('patient_id'),

@@ -10,7 +10,10 @@ class TherapistApprovalNotification extends Notification
 {
     use Queueable;
 
-    public function __construct(private Therapist $therapist) {}
+    public function __construct(
+        private Therapist $therapist,
+        private ?string $reason = null,
+    ) {}
 
     public function via(object $notifiable): array
     {
@@ -23,6 +26,7 @@ class TherapistApprovalNotification extends Notification
             'kind' => 'therapist_approval',
             'therapist_id' => $this->therapist->user_id,
             'approval_status' => $this->therapist->approval_status?->value,
+            'reason' => $this->reason,
         ];
     }
 }

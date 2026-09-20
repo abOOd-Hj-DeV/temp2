@@ -10,7 +10,10 @@ class TherapistSwitchDecidedNotification extends Notification
 {
     use Queueable;
 
-    public function __construct(private TherapistSwitch $switch) {}
+    public function __construct(
+        private TherapistSwitch $switch,
+        private string $kind = 'therapist_switch',
+    ) {}
 
     public function via(object $notifiable): array
     {
@@ -20,10 +23,11 @@ class TherapistSwitchDecidedNotification extends Notification
     public function toDatabase(object $notifiable): array
     {
         return [
-            'kind' => 'therapist_switch',
+            'kind' => $this->kind,
             'switch_id' => $this->switch->id,
             'status' => $this->switch->status,
             'therapist_decision' => $this->switch->therapist_decision,
+            'old_therapist_id' => $this->switch->old_therapist_id,
             'new_therapist_id' => $this->switch->new_therapist_id,
         ];
     }

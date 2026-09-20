@@ -5,6 +5,7 @@ namespace App\Services\Assessment;
 use App\Enums\AssessmentType;
 use App\Enums\RedFlagPriority;
 use App\Enums\RedFlagType;
+use App\Exceptions\ConflictException;
 use App\Models\Assessment;
 use App\Models\Patient;
 use App\Models\User;
@@ -12,6 +13,7 @@ use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
 use App\Services\NotificationService;
 use App\Services\RedFlagService;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -54,23 +56,27 @@ class AssessmentService
         $answers = $this->validateAnswers($type, $data['answers']);
         $score = array_sum($answers);
 
-        $assessment = DB::transaction(function () use ($patient, $type, $answers, $score) {
-            $assessment = $this->assessments->create([
-                'id' => (string) Str::uuid(),
-                'patient_id' => $patient->user_id,
-                'type' => $type->value,
-                'score' => $score,
-                'answers' => $answers,
-                'completed_at' => now(),
-            ]);
+        try {
+            $assessment = DB::transaction(function () use ($patient, $type, $answers, $score) {
+                $assessment = $this->assessments->create([
+                    'id' => (string) Str::uuid(),
+                    'patient_id' => $patient->user_id,
+                    'type' => $type->value,
+                    'score' => $score,
+                    'answers' => $answers,
+                    'completed_at' => now(),
+                ]);
 
-            $this->patients->updateAssessmentScore($patient->user_id, $score);
-            $this->escalateIfNeeded($patient, $assessment, $answers);
+                $this->patients->updateAssessmentScore($patient->user_id, $score);
+                $this->escalateIfNeeded($patient, $assessment, $answers);
 
-            return $assessment;
-        });
+                return $assessment;
+            });
+        } catch (UniqueConstraintViolationException) {
+            throw new ConflictException("A {$type->value} assessment was already submitted today.");
+        }
 
-        $this->notifications->assessmentCompleted($patient, $assessment);
+        $this->notifications->deliver('assessmentCompleted', $patient, $assessment);
 
         return [
             'assessment' => $this->toArray($assessment),

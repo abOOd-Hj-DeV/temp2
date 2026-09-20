@@ -51,7 +51,8 @@ class TokenRefreshTest extends TestCase
         $this->assertArrayHasKey('refresh_token', $body);
         $this->assertSame(64, strlen($body['refresh_token']));
         $this->assertTrue(now()->addMinutes(121)->gte($body['expires_at']));
-        $this->assertTrue(now()->addDays(29)->lte($body['refresh_expires_at']));
+        $this->assertTrue(now()->addDays(14)->lte($body['refresh_expires_at']));
+        $this->assertTrue(now()->addDays(16)->gte($body['refresh_expires_at']));
 
         // Only a digest is persisted.
         $this->assertDatabaseMissing('refresh_tokens', ['token_hash' => $body['refresh_token']]);

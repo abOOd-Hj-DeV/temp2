@@ -50,10 +50,19 @@ return [
     // active clinical staff member is alerted.
     'red_flag_escalation_minutes' => (int) env('SAKINA_RED_FLAG_ESCALATION_MINUTES', 60),
 
+    // An open red flag untouched for this long is superseded by a fresh one
+    // (linked to it) instead of being merged into.
+    'red_flag_stale_days' => (int) env('SAKINA_RED_FLAG_STALE_DAYS', 30),
+
+    // Queue connection that persists retries when the default connection is
+    // `sync` (which cannot retry): failed notifications and WhatsApp messages
+    // are parked here for a worker instead of being lost or failing the request.
+    'durable_queue_connection' => env('SAKINA_DURABLE_QUEUE_CONNECTION', 'database'),
+
     // Global api/* request ceiling per authenticated user (or IP) and the
     // hourly cap on full personal-data exports.
     'access_token_ttl_minutes' => (int) env('SAKINA_ACCESS_TOKEN_TTL_MINUTES', 120),
-    'refresh_token_ttl_days' => (int) env('SAKINA_REFRESH_TOKEN_TTL_DAYS', 30),
+    'refresh_token_ttl_days' => (int) env('SAKINA_REFRESH_TOKEN_TTL_DAYS', 15),
     'therapist_switch_lock_hours' => (int) env('SAKINA_THERAPIST_SWITCH_LOCK_HOURS', 48),
     'payment_review_sla_hours' => (int) env('SAKINA_PAYMENT_REVIEW_SLA_HOURS', 12),
     'api_rate_limit_per_minute' => (int) env('SAKINA_API_RATE_LIMIT_PER_MINUTE', 120),

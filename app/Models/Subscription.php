@@ -14,7 +14,7 @@ class Subscription extends Model
 
     protected $fillable = [
         'patient_id', 'type', 'package_id', 'sessions_total', 'duration_days', 'daily_sessions_quota',
-        'start_date', 'end_date', 'price', 'payment_proof_path', 'verification_status', 'content',
+        'start_date', 'end_date', 'price', 'payment_proof_path', 'verification_status', 'content', 'therapist_id',
     ];
 
     protected $casts = [
@@ -35,6 +35,16 @@ class Subscription extends Model
     public function package(): BelongsTo
     {
         return $this->belongsTo(Package::class, 'package_id');
+    }
+
+    public function sessions(): HasMany
+    {
+        return $this->hasMany(TherapySession::class, 'subscription_id');
+    }
+
+    public function therapist(): BelongsTo
+    {
+        return $this->belongsTo(Therapist::class, 'therapist_id', 'user_id');
     }
 
     public function payments(): HasMany

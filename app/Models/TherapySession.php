@@ -20,7 +20,7 @@ class TherapySession extends Model
         'medium', 'price', 'status', 'link', 'summary', 'is_initial',
         'payment_status', 'reminder_sent', 'reminder_1h_sent', 'reminder_attempts', 'reminder_1h_attempts',
         'attendance_confirmed_at', 'report_revision', 'reschedule_date', 'reschedule_time',
-        'reschedule_requested_by', 'reschedule_requested_at',
+        'reschedule_requested_by', 'reschedule_requested_at', 'subscription_id',
     ];
 
     protected $casts = [
