@@ -139,6 +139,59 @@ class SessionBookingTest extends TestCase
         $this->book()->assertStatus(422);
     }
 
+    public function test_booking_another_therapist_does_not_reassign_the_patient(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->book()->assertCreated();
+        $this->assertSame($this->therapist->user_id, $this->patient->refresh()->therapist_id);
+
+        $otherUser = $this->makeUser('therapist', '+963900000022');
+        $other = Therapist::create([
+            'user_id' => $otherUser->id, 'full_name' => 'Dr. Other', 'specialty' => 'x', 'country' => 'DE',
+            'languages' => ['en'], 'availability' => $this->therapist->availability, 'approval_status' => 'approved',
+        ]);
+
+        $this->book(['therapist_id' => $other->user_id, 'session_time' => '11:00'])
+            ->assertUnprocessable()->assertJsonValidationErrorFor('therapist_id');
+
+        $this->assertSame($this->therapist->user_id, $this->patient->refresh()->therapist_id);
+        $this->assertDatabaseMissing('therapy_sessions', ['therapist_id' => $other->user_id]);
+        $this->assertSame(0, $other->refresh()->clients_count);
+
+        // Booking the assigned therapist again is still fine.
+        $this->book(['session_time' => '11:00'])->assertCreated();
+    }
+
+    public function test_sessions_may_not_overlap_after_an_availability_shift(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->book()->assertCreated(); // 10:00-11:00
+
+        // Therapist later shifts the day by half an hour: 09:30, 10:30, 11:30 slots.
+        $day = strtolower(now()->addDay()->format('l'));
+        $this->therapist->update(['availability' => array_merge($this->therapist->availability, [$day => ['09:30-12:30']])]);
+
+        $this->getJson("/api/v1/therapists/{$this->therapist->user_id}/slots?date={$this->date}")
+            ->assertOk()->assertJsonPath('slots', ['11:30']);
+
+        $otherUser = $this->makeUser('patient', '+963900000023');
+        Patient::create(['user_id' => $otherUser->id, 'full_name' => 'Second', 'age' => 30, 'gender' => 'other', 'language' => 'en']);
+        Sanctum::actingAs($otherUser, ['*'], 'api');
+
+        $this->book(['session_time' => '10:30'])->assertUnprocessable()->assertJsonValidationErrorFor('session_time');
+        $this->book(['session_time' => '09:30'])->assertUnprocessable();
+        $id = $this->book(['session_time' => '11:30'])->assertCreated()->json('session.id');
+
+        // Rescheduling into an overlapping interval is refused as well.
+        $this->postJson("/api/v1/sessions/{$id}/reschedule", ['session_date' => $this->date, 'session_time' => '10:30'])
+            ->assertUnprocessable();
+
+        // Back-to-back sessions remain allowed.
+        $this->assertTrue(TherapySession::startTimesOverlap('10:00', '10:59'));
+        $this->assertFalse(TherapySession::startTimesOverlap('10:00', '11:00'));
+        $this->assertFalse(TherapySession::startTimesOverlap('11:00', '10:00'));
+    }
+
     public function test_booking_outside_availability_is_rejected(): void
     {
         Sanctum::actingAs($this->patientUser, ['*'], 'api');

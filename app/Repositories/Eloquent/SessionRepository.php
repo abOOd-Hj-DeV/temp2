@@ -74,16 +74,26 @@ class SessionRepository implements SessionRepositoryInterface
 
     public function hasConflict(string $therapistId, string $date, string $time): bool
     {
-        return in_array(substr($time, 0, 5), $this->bookedTimesFor($therapistId, $date), true);
+        $time = substr($time, 0, 5);
+
+        foreach ($this->bookedTimesFor($therapistId, $date) as $booked) {
+            if (TherapySession::startTimesOverlap($booked, $time)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function hasActiveSessionAt(string $patientId, string $date, string $time): bool
     {
+        $time = substr($time, 0, 5);
+
         return TherapySession::where('patient_id', $patientId)
             ->whereDate('session_date', $date)
-            ->where('session_time', 'like', substr($time, 0, 5).'%')
             ->where('status', '!=', SessionStatus::CANCELLED->value)
-            ->exists();
+            ->pluck('session_time')
+            ->contains(fn ($booked) => TherapySession::startTimesOverlap(substr((string) $booked, 0, 5), $time));
     }
 
     public function countNonCancelledBetween(string $patientId, string $therapistId): int

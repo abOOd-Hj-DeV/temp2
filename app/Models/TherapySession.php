@@ -38,6 +38,24 @@ class TherapySession extends Model
         'reschedule_requested_at' => 'datetime',
     ];
 
+    public static function durationMinutes(): int
+    {
+        return max(1, (int) config('sakina.session_duration_minutes', 60));
+    }
+
+    /**
+     * Whether two same-day sessions of the configured duration starting at
+     * the given H:i times overlap. Back-to-back sessions do not.
+     */
+    public static function startTimesOverlap(string $a, string $b): bool
+    {
+        $toMinutes = fn (string $t) => ((int) substr($t, 0, 2)) * 60 + (int) substr($t, 3, 2);
+        $duration = self::durationMinutes();
+        [$startA, $startB] = [$toMinutes($a), $toMinutes($b)];
+
+        return $startA < $startB + $duration && $startB < $startA + $duration;
+    }
+
     public function patient(): BelongsTo
     {
         return $this->belongsTo(Patient::class, 'patient_id', 'user_id');

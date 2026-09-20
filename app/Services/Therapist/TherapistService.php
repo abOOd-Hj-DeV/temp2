@@ -6,6 +6,7 @@ use App\Enums\ApprovalStatus;
 use App\Enums\SessionStatus;
 use App\Exceptions\ConflictException;
 use App\Models\Therapist;
+use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\SessionRepositoryInterface;
 use App\Repositories\Contracts\TherapistRepositoryInterface;
@@ -81,8 +82,14 @@ class TherapistService
             for ($slot = $start->copy(); $slot->copy()->addMinutes($duration)->lte($end); $slot->addMinutes($duration)) {
                 $time = $slot->format('H:i');
 
-                if ($slot->lte($now) || in_array($time, $booked, true)) {
+                if ($slot->lte($now)) {
                     continue;
+                }
+
+                foreach ($booked as $bookedTime) {
+                    if (TherapySession::startTimesOverlap($bookedTime, $time)) {
+                        continue 2;
+                    }
                 }
 
                 $slots[] = $time;

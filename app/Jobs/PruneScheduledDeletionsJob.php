@@ -25,8 +25,13 @@ class PruneScheduledDeletionsJob implements ShouldQueue
             ->where('deletion_scheduled_at', '<=', now())
             ->whereNull('anonymized_at')
             ->each(function (User $user) use ($anonymizer, &$count) {
-                $anonymizer->anonymize($user);
-                $count++;
+                try {
+                    $anonymizer->anonymize($user);
+                    $count++;
+                } catch (\Throwable $e) {
+                    report($e);
+                    Log::error('Anonymization failed; will retry on the next run', ['user_id' => $user->id]);
+                }
             });
 
         if ($count > 0) {

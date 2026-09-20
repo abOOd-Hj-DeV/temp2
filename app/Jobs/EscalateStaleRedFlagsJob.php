@@ -82,7 +82,7 @@ class EscalateStaleRedFlagsJob implements ShouldQueue
             return;
         }
 
-        $delivered = $notifications->redFlagEscalated($flag, $staff, $attempt);
+        $delivered = $notifications->redFlagEscalated($flag, $staff);
 
         RedFlag::whereKey($flag->id)->whereNull('escalated_at')->update(['escalated_at' => now()]);
 

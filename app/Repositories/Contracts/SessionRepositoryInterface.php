@@ -36,11 +36,13 @@ interface SessionRepositoryInterface
     public function countNonCancelledForPatientInRange(string $patientId, string $from, string $to): int;
 
     /**
-     * Whether the therapist has a non-cancelled session at this exact slot.
+     * Whether a pending/confirmed session of the therapist overlaps the
+     * interval [time, time + session duration). Adjacent sessions do not
+     * conflict.
      */
     public function hasConflict(string $therapistId, string $date, string $time): bool;
 
-    /** Patient already holds a non-cancelled session at this exact date/time. */
+    /** Patient already holds a non-cancelled session overlapping this date/time interval. */
     public function hasActiveSessionAt(string $patientId, string $date, string $time): bool;
 
     /** Non-cancelled sessions between a patient and a therapist. */

@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Enums\ApprovalStatus;
 use App\Enums\PaymentReviewStatus;
 use App\Enums\SessionStatus;
+use App\Enums\UserRole;
 use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\Assessment;
 use App\Models\Patient;
@@ -49,45 +51,72 @@ class NotificationService
         $this->notifyOnce($patient->user, new AssessmentCompletedNotification($assessment), "assessment.completed:{$assessment->id}");
     }
 
+    /**
+     * Alert the flag's owner (clinical supervisor by default) and the
+     * patient's current therapist. Each recipient is reached once per flag.
+     */
     public function redFlagRaised(RedFlag $redFlag): void
     {
-        $assignee = $redFlag->assignedUser;
+        $recipients = collect([$redFlag->assignedUser, $this->currentTherapistFor($redFlag)])
+            ->filter(fn ($user) => $user instanceof User)
+            ->unique('id');
 
-        if (! $assignee instanceof User) {
+        if ($recipients->isEmpty()) {
             Log::warning('Red flag raised with no assignee to notify', ['red_flag_id' => $redFlag->id]);
 
             return;
         }
 
-        if (! $this->notifyOnce($assignee, new RedFlagRaisedNotification($redFlag), "red_flag.raised:{$redFlag->id}")) {
-            return;
+        foreach ($recipients as $recipient) {
+            if (! $this->notifyOnce($recipient, new RedFlagRaisedNotification($redFlag), "red_flag.raised:{$redFlag->id}")) {
+                continue;
+            }
+
+            // Message carries no patient identity: it goes through a third-party provider.
+            $this->sendWhatsAppSafe(
+                $recipient->whatsapp_number,
+                sprintf(
+                    'Sakina alert: a %s red flag (%s priority) is awaiting your review. Ref %s.',
+                    $redFlag->type->value,
+                    $redFlag->priority->value,
+                    substr($redFlag->id, 0, 8)
+                ),
+                ['red_flag_id' => $redFlag->id]
+            );
+        }
+    }
+
+    /**
+     * The patient's assigned therapist, only while active and approved.
+     */
+    private function currentTherapistFor(RedFlag $redFlag): ?User
+    {
+        $therapistId = Patient::whereKey($redFlag->patient_id)->value('therapist_id');
+
+        if ($therapistId === null) {
+            return null;
         }
 
-        // Message carries no patient identity: it goes through a third-party provider.
-        $this->sendWhatsAppSafe(
-            $assignee->whatsapp_number,
-            sprintf(
-                'Sakina alert: a %s red flag (%s priority) is awaiting your review. Ref %s.',
-                $redFlag->type->value,
-                $redFlag->priority->value,
-                substr($redFlag->id, 0, 8)
-            ),
-            ['red_flag_id' => $redFlag->id]
-        );
+        return User::whereKey($therapistId)
+            ->where('is_active', true)
+            ->where('role', UserRole::THERAPIST->value)
+            ->whereHas('therapist', fn ($q) => $q->where('approval_status', ApprovalStatus::APPROVED->value))
+            ->first();
     }
 
     /**
      * Alert every active clinical staff member that a flag has gone unhandled.
-     * Returns how many recipients were actually reached for the first time.
+     * Returns how many recipients were actually reached for the first time;
+     * a retried escalation only reaches staff the earlier attempt missed.
      *
      * @param  iterable<User>  $staff
      */
-    public function redFlagEscalated(RedFlag $redFlag, iterable $staff, int $attempt = 1): int
+    public function redFlagEscalated(RedFlag $redFlag, iterable $staff): int
     {
         $delivered = 0;
 
         foreach ($staff as $user) {
-            if (! $this->notifyOnce($user, new RedFlagEscalatedNotification($redFlag), "red_flag.escalated:{$redFlag->id}:{$attempt}")) {
+            if (! $this->notifyOnce($user, new RedFlagEscalatedNotification($redFlag), "red_flag.escalated:{$redFlag->id}")) {
                 continue;
             }
 

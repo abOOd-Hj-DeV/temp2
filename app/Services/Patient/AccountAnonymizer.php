@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\AuditLogService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
@@ -15,10 +16,15 @@ use Illuminate\Support\Str;
  * permanently disabled, while sessions, payments, assessments and red
  * flags remain linked to the (now anonymous) id for audit purposes.
  *
- * Free text written by or about the patient (session summaries, mood notes,
- * payment notes, switch reasons, therapist notes, red-flag text) is kept for
- * clinical continuity but redacted of direct identifiers: the person's name,
- * e-mail addresses and phone numbers.
+ * Free text written about the patient (session summaries, payment notes,
+ * switch reasons, therapist notes, red-flag text) is kept for clinical
+ * continuity but redacted of direct identifiers: the person's name, e-mail
+ * addresses and phone numbers. Free text written by the patient (mood notes)
+ * is cleared outright; the scores stay.
+ *
+ * Files the person uploaded (payment proofs, licence documents) are removed
+ * from the uploads disk inside the same transaction, so a storage failure
+ * rolls the erasure back and the account is retried on the next run.
  */
 class AccountAnonymizer
 {
@@ -27,7 +33,6 @@ class AccountAnonymizer
     /** table => [owner column, free-text columns] */
     private const FREE_TEXT = [
         'therapy_sessions' => ['patient_id', ['summary']],
-        'mood_logs' => ['patient_id', ['notes']],
         'therapist_switches' => ['patient_id', ['reason']],
         'therapist_client_notes' => ['patient_id', ['body']],
         'red_flags' => ['patient_id', ['description', 'action_taken']],
@@ -72,19 +77,61 @@ class AccountAnonymizer
             IdempotencyKey::where('user_id', $user->id)->delete();
 
             $this->redactFreeText($user->id, $identifiers);
+            DB::table('mood_logs')->where('patient_id', $user->id)->whereNotNull('notes')->update(['notes' => null]);
+            $this->purgeOwnedFiles($user);
 
             $this->audit->record($user, AuditLogService::ACCOUNT_ANONYMIZED, $user->id);
         });
     }
 
+    /**
+     * Delete every upload owned by the person from the uploads disk. Payment
+     * rows keep their (non-identifying, generated) path so the financial
+     * record survives; the licence path is cleared. A file that still exists
+     * after delete() aborts the transaction so nothing is marked anonymized
+     * while an identifying file remains.
+     */
+    private function purgeOwnedFiles(User $user): void
+    {
+        $disk = Storage::disk(config('sakina.uploads_disk', 'local'));
+
+        $paths = DB::table('payments')
+            ->where($this->paymentsOwnedBy($user->id))
+            ->pluck('proof_file_path')
+            ->push($user->therapist?->license_file_path)
+            ->map(fn ($path) => trim((string) $path))
+            ->filter(fn (string $path) => $path !== '')
+            ->unique();
+
+        foreach ($paths as $path) {
+            if (str_contains($path, '..')) {
+                throw new \RuntimeException('Owned upload has an unsafe path; anonymization aborted.');
+            }
+
+            if (! $disk->exists($path)) {
+                continue;
+            }
+
+            if (! $disk->delete($path) || $disk->exists($path)) {
+                throw new \RuntimeException("Owned upload [{$path}] could not be deleted; anonymization aborted.");
+            }
+        }
+
+        if ($user->therapist?->license_file_path !== null) {
+            $user->therapist->forceFill(['license_file_path' => null])->save();
+        }
+    }
+
+    private function paymentsOwnedBy(string $userId): \Closure
+    {
+        return fn ($q) => $q->whereIn('subscription_id', DB::table('subscriptions')->select('id')->where('patient_id', $userId))
+            ->orWhereIn('therapy_session_id', DB::table('therapy_sessions')->select('id')->where('patient_id', $userId));
+    }
+
     private function redactFreeText(string $userId, array $identifiers): void
     {
         $tables = self::FREE_TEXT;
-        $tables['payments'] = [
-            fn ($q) => $q->whereIn('subscription_id', DB::table('subscriptions')->select('id')->where('patient_id', $userId))
-                ->orWhereIn('therapy_session_id', DB::table('therapy_sessions')->select('id')->where('patient_id', $userId)),
-            ['note'],
-        ];
+        $tables['payments'] = [$this->paymentsOwnedBy($userId), ['note']];
 
         foreach ($tables as $table => [$owner, $columns]) {
             $query = DB::table($table);

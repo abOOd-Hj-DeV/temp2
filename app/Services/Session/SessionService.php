@@ -54,6 +54,14 @@ class SessionService
         try {
             $session = DB::transaction(function () use ($patient, $therapist, $data, $date, $time) {
                 $therapist = Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
+                // Re-read the assignment under lock so a concurrent switch or
+                // booking cannot race it; the caller's instance stays in sync.
+                $patient->setRawAttributes(
+                    Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail()->getAttributes(),
+                    true
+                );
+
+                $this->assertBookableTherapist($patient, $therapist);
 
                 if (! $this->therapistService->isSlotAvailable($therapist, $date, $time)) {
                     throw ValidationException::withMessages(['session_time' => 'The requested slot is not available.']);
@@ -97,7 +105,7 @@ class SessionService
 
                 $this->logStatus($session, null, SessionStatus::PENDING, $patient->user_id);
 
-                if ($patient->therapist_id !== $therapist->user_id) {
+                if ($patient->therapist_id === null) {
                     $patient->update(['therapist_id' => $therapist->user_id]);
                 }
 
@@ -483,6 +491,20 @@ class SessionService
         if ($this->sessions->countNonCancelledForPatientInRange($patient->user_id, $day, $day) >= $daily) {
             throw ValidationException::withMessages([
                 'session_date' => "Your package allows {$daily} session(s) per day.",
+            ]);
+        }
+    }
+
+    /**
+     * The first booking assigns the therapist; afterwards the assignment only
+     * changes through the reviewed therapist-switch workflow, never as a side
+     * effect of booking with someone else.
+     */
+    private function assertBookableTherapist(Patient $patient, Therapist $therapist): void
+    {
+        if ($patient->therapist_id !== null && $patient->therapist_id !== $therapist->user_id) {
+            throw ValidationException::withMessages([
+                'therapist_id' => 'Sessions can only be booked with your assigned therapist. Request a therapist switch to change it.',
             ]);
         }
     }

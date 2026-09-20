@@ -58,13 +58,8 @@ class AuthService
 
             if ($existing) {
                 $this->assertEmailAvailable($data['email'], $existing);
-                $this->users->update($existing, [
-                    'name' => $data['name'],
-                    'email' => $data['email'],
-                    'password' => Hash::make($data['password']),
-                ]);
 
-                return $existing->refresh();
+                return $existing;
             }
 
             $this->assertEmailAvailable($data['email']);
@@ -96,6 +91,29 @@ class AuthService
             }
 
             throw $e;
+        }
+
+        // A pending account only takes on the new details once a code was
+        // actually delivered; a throttled or failed send leaves it untouched.
+        if (! $created) {
+            $user = DB::transaction(function () use ($user, $data) {
+                $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+
+                if ($user->isVerified()) {
+                    throw ValidationException::withMessages([
+                        'whatsapp_number' => __('This WhatsApp number is already registered.'),
+                    ]);
+                }
+
+                $this->assertEmailAvailable($data['email'], $user);
+                $this->users->update($user, [
+                    'name' => $data['name'],
+                    'email' => $data['email'],
+                    'password' => Hash::make($data['password']),
+                ]);
+
+                return $user->refresh();
+            });
         }
 
         return [
@@ -159,7 +177,12 @@ class AuthService
             ]);
         }
 
-        $this->assertLoginable($user);
+        try {
+            $this->assertLoginable($user);
+        } catch (ValidationException $e) {
+            $this->recordFailedLogin($user, $data['whatsapp_number']);
+            throw $e;
+        }
 
         // The user row is locked while the token is minted so a concurrent
         // anonymisation/deactivation either runs first (login is refused) or
@@ -183,6 +206,7 @@ class AuthService
         });
 
         Cache::forget($this->lockoutKey($data['whatsapp_number']));
+        Cache::forget($this->attemptsKey($data['whatsapp_number']));
 
         return array_merge(['message' => __('Login successful.'), 'user' => $user], $tokens);
     }
@@ -410,28 +434,46 @@ class AuthService
         }
     }
 
+    /**
+     * Failed attempts are counted per normalised number whether or not it
+     * belongs to an account, so the lockout response cannot be used to tell
+     * registered numbers from unknown ones.
+     */
     private function recordFailedLogin(?User $user, string $whatsappNumber): void
     {
-        if (! $user) {
-            return;
+        $key = $this->attemptsKey($whatsappNumber);
+        $ttl = now()->addMinutes(self::LOGIN_LOCKOUT_MINUTES);
+
+        Cache::add($key, 0, $ttl);
+        $attempts = (int) Cache::increment($key);
+
+        if ($user) {
+            $this->users->update($user, ['login_attempts' => $attempts]);
         }
 
-        $attempts = $user->login_attempts + 1;
-        $this->users->update($user, ['login_attempts' => $attempts]);
-
         if ($attempts >= self::MAX_LOGIN_ATTEMPTS) {
-            Cache::put(
-                $this->lockoutKey($whatsappNumber),
-                true,
-                now()->addMinutes(self::LOGIN_LOCKOUT_MINUTES)
-            );
-            $this->users->update($user, ['login_attempts' => 0]);
-            Log::warning('Account locked after failed logins', ['user_id' => $user->id]);
+            Cache::put($this->lockoutKey($whatsappNumber), true, $ttl);
+            Cache::forget($key);
+
+            if ($user) {
+                $this->users->update($user, ['login_attempts' => 0]);
+                Log::warning('Account locked after failed logins', ['user_id' => $user->id]);
+            }
         }
     }
 
     private function lockoutKey(string $whatsappNumber): string
     {
-        return 'login_lock:'.preg_replace('/\D+/', '', $whatsappNumber);
+        return 'login_lock:'.$this->normalizeNumber($whatsappNumber);
+    }
+
+    private function attemptsKey(string $whatsappNumber): string
+    {
+        return 'login_attempts:'.$this->normalizeNumber($whatsappNumber);
+    }
+
+    private function normalizeNumber(string $whatsappNumber): string
+    {
+        return preg_replace('/\D+/', '', $whatsappNumber);
     }
 }
