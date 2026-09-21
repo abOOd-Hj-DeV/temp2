@@ -30,7 +30,7 @@ class SessionController extends Controller
 
         return response()->json([
             'message' => 'Session booked.',
-            'session' => $this->sessionService->toArray($session),
+            'session' => $this->sessionService->toArray($session, $request->user()),
         ], 201);
     }
 
@@ -42,7 +42,7 @@ class SessionController extends Controller
         );
 
         return response()->json([
-            'data' => collect($paginator->items())->map(fn ($s) => $this->sessionService->toArray($s)),
+            'data' => collect($paginator->items())->map(fn ($s) => $this->sessionService->toArray($s, $request->user())),
             'pagination' => [
                 'current_page' => $paginator->currentPage(),
                 'last_page' => $paginator->lastPage(),
@@ -56,7 +56,7 @@ class SessionController extends Controller
         $this->assertParticipant($request, $session);
 
         return response()->json([
-            'session' => $this->sessionService->toArray($session),
+            'session' => $this->sessionService->toArray($session, $request->user()),
             'status_log' => $this->sessionService->statusLog($session),
         ]);
     }
@@ -69,7 +69,7 @@ class SessionController extends Controller
 
         return response()->json([
             'message' => 'Session cancelled.',
-            'session' => $this->sessionService->toArray($session),
+            'session' => $this->sessionService->toArray($session, $request->user()),
         ]);
     }
 
@@ -95,7 +95,7 @@ class SessionController extends Controller
     {
         $session = $this->sessionService->confirmAttendance($session, $request->user());
 
-        return response()->json(['message' => 'Attendance confirmed.', 'session' => $this->sessionService->toArray($session)]);
+        return response()->json(['message' => 'Attendance confirmed.', 'session' => $this->sessionService->toArray($session, $request->user())]);
     }
 
     /** Patient asks to move the session; the therapist must approve. */
@@ -104,7 +104,7 @@ class SessionController extends Controller
         $this->assertParticipant($request, $session);
 
         $data = $request->validate([
-            'session_date' => 'required|date_format:Y-m-d|after_or_equal:today',
+            'session_date' => 'required|date_format:Y-m-d',
             'session_time' => 'required|date_format:H:i',
         ]);
 
@@ -112,7 +112,7 @@ class SessionController extends Controller
 
         return response()->json([
             'message' => 'Reschedule requested; awaiting your therapist\'s approval.',
-            'session' => $this->sessionService->toArray($session),
+            'session' => $this->sessionService->toArray($session, $request->user()),
         ], 202);
     }
 
@@ -125,7 +125,7 @@ class SessionController extends Controller
 
         return response()->json([
             'message' => $data['action'] === 'approve' ? 'Session rescheduled.' : 'Reschedule request rejected.',
-            'session' => $this->sessionService->toArray($session),
+            'session' => $this->sessionService->toArray($session, $request->user()),
         ]);
     }
 
@@ -134,7 +134,7 @@ class SessionController extends Controller
     {
         $session = $this->sessionService->confirm($session, $request->user());
 
-        return response()->json(['message' => 'Session confirmed.', 'session' => $this->sessionService->toArray($session)]);
+        return response()->json(['message' => 'Session confirmed.', 'session' => $this->sessionService->toArray($session, $request->user())]);
     }
 
     /** Therapist completes a confirmed session with an optional summary. */
@@ -142,7 +142,7 @@ class SessionController extends Controller
     {
         $session = $this->sessionService->complete($session, $request->user(), $request->input('summary'));
 
-        return response()->json(['message' => 'Session completed.', 'session' => $this->sessionService->toArray($session)]);
+        return response()->json(['message' => 'Session completed.', 'session' => $this->sessionService->toArray($session, $request->user())]);
     }
 
     /** Therapist writes the post-session report (completes a confirmed session). */
@@ -152,7 +152,7 @@ class SessionController extends Controller
 
         $session = $this->sessionService->report($session, $request->user(), $data['summary']);
 
-        return response()->json(['message' => 'Report saved.', 'session' => $this->sessionService->toArray($session)]);
+        return response()->json(['message' => 'Report saved.', 'session' => $this->sessionService->toArray($session, $request->user())]);
     }
 
     /** Therapist attaches the meeting link. */
@@ -160,7 +160,7 @@ class SessionController extends Controller
     {
         $session = $this->sessionService->setLink($session, $request->user(), $request->input('link'));
 
-        return response()->json(['message' => 'Link saved.', 'session' => $this->sessionService->toArray($session)]);
+        return response()->json(['message' => 'Link saved.', 'session' => $this->sessionService->toArray($session, $request->user())]);
     }
 
     private function assertParticipant(Request $request, TherapySession $session): void

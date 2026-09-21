@@ -35,6 +35,7 @@ Route::prefix('auth')->name('auth.')->group(function () {
 
     Route::middleware('auth:api')->group(function () {
         Route::get('/user', [AuthController::class, 'user'])->name('user');
+        Route::put('/user/timezone', [AuthController::class, 'updateTimezone'])->name('user.timezone');
         Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
         Route::post('/logout-all', [AuthController::class, 'logoutAll'])->name('logout.all');
     });

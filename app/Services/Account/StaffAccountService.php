@@ -11,6 +11,7 @@ use App\Services\AuditLogService;
 use App\Services\Messaging\WhatsAppSenderInterface;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -60,7 +61,7 @@ class StaffAccountService
 
     /**
      * @param  array{name: string, email: string, whatsapp_number: string, role: string, therapist?: array}  $data
-     * @return array{user: User, expires_at: \Illuminate\Support\Carbon}
+     * @return array{user: User, expires_at: Carbon}
      */
     public function invite(User $actor, array $data): array
     {
@@ -99,6 +100,7 @@ class StaffAccountService
                 'password' => Hash::make(Str::random(64)),
                 'role' => $role->value,
                 'whatsapp_number' => $data['whatsapp_number'],
+                'timezone' => $data['timezone'] ?? config('app.timezone', 'UTC'),
                 'is_active' => false,
                 'phone_verified_at' => null,
                 'login_attempts' => 0,

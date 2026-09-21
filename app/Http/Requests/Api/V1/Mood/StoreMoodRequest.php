@@ -13,6 +13,8 @@ class StoreMoodRequest extends FormRequest
 
     public function rules(): array
     {
+        $today = now($this->user()?->timezone() ?? config('app.timezone', 'UTC'))->startOfDay();
+
         return [
             'score' => ['required', 'integer', 'min:1', 'max:10', function (string $attribute, mixed $value, \Closure $fail) {
                 if (! is_int($value)) {
@@ -20,7 +22,7 @@ class StoreMoodRequest extends FormRequest
                 }
             }],
             'notes' => ['nullable', 'string', 'max:1000'],
-            'log_date' => ['nullable', 'date_format:Y-m-d', 'before_or_equal:today', 'after_or_equal:'.now()->subDays(7)->toDateString()],
+            'log_date' => ['nullable', 'date_format:Y-m-d', 'before_or_equal:'.$today, 'after_or_equal:'.$today->copy()->subDays(7)->toDateString()],
         ];
     }
 }

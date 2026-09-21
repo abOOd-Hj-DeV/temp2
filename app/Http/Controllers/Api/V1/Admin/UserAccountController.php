@@ -44,6 +44,7 @@ class UserAccountController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|email|max:255',
             'whatsapp_number' => ['required', 'string', 'regex:/^\+?[0-9]{8,15}$/'],
+            'timezone' => ['nullable', 'string', 'timezone:all'],
             'role' => ['required', Rule::in(StaffAccountService::creatableRolesFor($request->user()))],
             'therapist' => ['required_if:role,therapist', 'array'],
             'therapist.full_name' => 'nullable|string|max:255',

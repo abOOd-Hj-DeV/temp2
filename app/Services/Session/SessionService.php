@@ -17,6 +17,7 @@ use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
 use App\Services\Therapist\TherapistService;
+use App\Support\SessionClock;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -50,8 +51,7 @@ class SessionService
     public function book(Patient $patient, array $data): TherapySession
     {
         $therapist = $this->therapistService->getTherapist($data['therapist_id']);
-        $date = Carbon::parse($data['session_date'])->startOfDay();
-        $time = substr($data['session_time'], 0, 5);
+        [$date, $time] = $this->requestedSlot($data['session_date'], $data['session_time'], $patient->user);
 
         try {
             $session = DB::transaction(function () use ($patient, $therapist, $data, $date, $time) {
@@ -283,12 +283,7 @@ class SessionService
 
         $this->assertCancellable($session);
 
-        $date = Carbon::parse($date)->startOfDay();
-        $time = substr($time, 0, 5);
-
-        if ($date->isPast() && ! $date->isToday()) {
-            throw ValidationException::withMessages(['session_date' => 'The new date must be in the future.']);
-        }
+        [$date, $time] = $this->requestedSlot($date, $time, $actor);
 
         $fresh = DB::transaction(function () use ($session, $actor, $date, $time) {
             $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
@@ -435,7 +430,28 @@ class SessionService
 
     public function startsAt(TherapySession $session): Carbon
     {
-        return Carbon::parse($session->session_date->toDateString().' '.substr((string) $session->session_time, 0, 5));
+        return SessionClock::fromStored($session->session_date, (string) $session->session_time);
+    }
+
+    /**
+     * Interpret a local date + "HH:MM" in the actor's timezone, reject the
+     * past, and return the UTC storage pair [date at midnight, "HH:MM"].
+     *
+     * @return array{0: Carbon, 1: string}
+     */
+    private function requestedSlot(string $date, string $time, User $actor): array
+    {
+        try {
+            $utc = SessionClock::toUtc($date, $time, $actor->timezone());
+        } catch (\Throwable) {
+            throw ValidationException::withMessages(['session_date' => 'The date or time is invalid.']);
+        }
+
+        if ($utc->lte(now())) {
+            throw ValidationException::withMessages(['session_date' => 'The session must be in the future.']);
+        }
+
+        return [$utc->copy()->startOfDay(), $utc->format('H:i')];
     }
 
     /**
@@ -576,8 +592,14 @@ class SessionService
         $therapist->update(['clients_count' => $this->distinctClients($therapist)]);
     }
 
-    public function toArray(TherapySession $session): array
+    /**
+     * `session_date`/`session_time` stay UTC for existing clients; `local`
+     * carries the same instant in the viewer's timezone when one is given.
+     */
+    public function toArray(TherapySession $session, ?User $viewer = null): array
     {
+        $startsAt = $session->session_date === null || $session->session_time === null ? null : $this->startsAt($session);
+
         return [
             'id' => $session->id,
             'patient_id' => $session->patient_id,
@@ -585,6 +607,8 @@ class SessionService
             'therapist_name' => $session->therapist?->full_name,
             'session_date' => $session->session_date?->toDateString(),
             'session_time' => $session->session_time,
+            'starts_at' => $startsAt?->toISOString(),
+            'local' => $startsAt !== null && $viewer !== null ? SessionClock::localize($startsAt, $viewer->timezone()) : null,
             'medium' => $session->medium?->value,
             'price' => $session->price,
             'status' => $session->status?->value,
@@ -598,6 +622,10 @@ class SessionService
             'reschedule' => $session->reschedule_date === null ? null : [
                 'date' => $session->reschedule_date->toDateString(),
                 'time' => substr((string) $session->reschedule_time, 0, 5),
+                'local' => $viewer === null ? null : SessionClock::localize(
+                    SessionClock::fromStored($session->reschedule_date, (string) $session->reschedule_time),
+                    $viewer->timezone()
+                ),
                 'requested_at' => $session->reschedule_requested_at?->toISOString(),
             ],
             'created_at' => $session->created_at?->toISOString(),

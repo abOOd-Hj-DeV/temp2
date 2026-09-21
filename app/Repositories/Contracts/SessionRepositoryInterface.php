@@ -27,6 +27,14 @@ interface SessionRepositoryInterface
     public function bookedTimesFor(string $therapistId, string $date, ?string $excludeSessionId = null): array;
 
     /**
+     * UTC start instants of pending/confirmed sessions for a therapist whose
+     * stored date falls within [$from, $to] (inclusive, UTC dates).
+     *
+     * @return array<int, Carbon>
+     */
+    public function bookedStartsBetween(string $therapistId, Carbon $from, Carbon $to, ?string $excludeSessionId = null): array;
+
+    /**
      * Count of sessions a patient has that were never cancelled — used to
      * derive is_initial (the first real booking).
      */

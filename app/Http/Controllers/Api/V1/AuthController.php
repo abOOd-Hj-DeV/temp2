@@ -91,6 +91,13 @@ class AuthController extends Controller
         return response()->json($this->auth->currentUser($request->user()));
     }
 
+    public function updateTimezone(Request $request): JsonResponse
+    {
+        $data = $request->validate(['timezone' => ['required', 'string', 'timezone:all']]);
+
+        return response()->json($this->auth->updateTimezone($request->user(), $data['timezone']));
+    }
+
     public function logout(Request $request): JsonResponse
     {
         return response()->json($this->auth->logout($request->user()));

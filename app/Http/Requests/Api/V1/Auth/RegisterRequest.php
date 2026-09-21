@@ -30,6 +30,7 @@ class RegisterRequest extends FormRequest
             'email' => ['required', 'email', 'max:255'],
             'password' => ['required', 'string', 'min:8', 'confirmed'],
             'whatsapp_number' => ['required', 'string', 'regex:/^\+?[0-9]{8,15}$/'],
+            'timezone' => ['nullable', 'string', 'timezone:all'],
         ];
     }
 }

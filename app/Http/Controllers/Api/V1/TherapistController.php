@@ -13,7 +13,7 @@ use App\Services\Therapist\TherapistService;
 use App\Services\Wallet\WalletService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
+use Illuminate\Validation\ValidationException;
 
 class TherapistController extends Controller
 {
@@ -63,17 +63,27 @@ class TherapistController extends Controller
     }
 
     /**
-     * Bookable slots for a therapist on a given date.
+     * Bookable slots for a therapist on a given date, in the caller's timezone.
      */
     public function slots(Request $request, string $id): JsonResponse
     {
-        $request->validate(['date' => 'required|date|after_or_equal:today']);
+        $request->validate(['date' => 'required|date_format:Y-m-d']);
+
+        $timezone = $request->user()->timezone();
+        $date = $request->input('date');
+
+        if ($date < now($timezone)->toDateString()) {
+            throw ValidationException::withMessages(['date' => 'The date must be today or later.']);
+        }
 
         $therapist = $this->therapistService->getTherapist($id);
+        $slots = $this->therapistService->availableSlotsFor($therapist, $date, $timezone);
 
         return response()->json([
-            'date' => $request->input('date'),
-            'slots' => $this->therapistService->availableSlots($therapist, Carbon::parse($request->input('date'))),
+            'date' => $date,
+            'timezone' => $timezone,
+            'slots' => array_column($slots, 'time'),
+            'slot_details' => $slots,
         ]);
     }
 
@@ -128,7 +138,7 @@ class TherapistController extends Controller
         );
 
         return response()->json([
-            'data' => collect($paginator->items())->map(fn ($s) => $this->sessionService->toArray($s)),
+            'data' => collect($paginator->items())->map(fn ($s) => $this->sessionService->toArray($s, $request->user())),
             'pagination' => [
                 'current_page' => $paginator->currentPage(),
                 'last_page' => $paginator->lastPage(),

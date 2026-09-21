@@ -24,7 +24,7 @@ class MoodService
 
     public function log(Patient $patient, array $data): array
     {
-        $date = $data['log_date'] ?? now()->toDateString();
+        $date = $data['log_date'] ?? now($patient->user?->timezone() ?? config('app.timezone', 'UTC'))->toDateString();
 
         try {
             $log = DB::transaction(function () use ($patient, $data, $date) {

@@ -74,6 +74,7 @@ class AuthService
                 'password' => Hash::make($data['password']),
                 'role' => UserRole::PATIENT->value,
                 'whatsapp_number' => $data['whatsapp_number'],
+                'timezone' => $data['timezone'] ?? config('app.timezone', 'UTC'),
                 'is_active' => false,
                 'phone_verified_at' => null,
                 'login_attempts' => 0,
@@ -338,6 +339,13 @@ class AuthService
         throw ValidationException::withMessages([
             'refresh_token' => __('Invalid or expired refresh token.'),
         ]);
+    }
+
+    public function updateTimezone(User $user, string $timezone): array
+    {
+        $user->forceFill(['timezone' => $timezone])->save();
+
+        return $this->currentUser($user);
     }
 
     public function currentUser(User $user): array

@@ -6,6 +6,7 @@ use App\Enums\PaymentStatus;
 use App\Enums\SessionStatus;
 use App\Models\TherapySession;
 use App\Repositories\Contracts\SessionRepositoryInterface;
+use App\Support\SessionClock;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
@@ -54,6 +55,21 @@ class SessionRepository implements SessionRepositoryInterface
             ])
             ->pluck('session_time')
             ->map(fn ($t) => substr((string) $t, 0, 5))
+            ->all();
+    }
+
+    public function bookedStartsBetween(string $therapistId, Carbon $from, Carbon $to, ?string $excludeSessionId = null): array
+    {
+        return TherapySession::where('therapist_id', $therapistId)
+            ->whereDate('session_date', '>=', $from->copy()->utc()->toDateString())
+            ->whereDate('session_date', '<=', $to->copy()->utc()->toDateString())
+            ->when($excludeSessionId !== null, fn ($query) => $query->where('id', '!=', $excludeSessionId))
+            ->whereIn('status', [
+                SessionStatus::PENDING->value,
+                SessionStatus::CONFIRMED->value,
+            ])
+            ->get(['session_date', 'session_time'])
+            ->map(fn (TherapySession $s) => SessionClock::fromStored($s->session_date, (string) $s->session_time))
             ->all();
     }
 
@@ -122,11 +138,7 @@ class SessionRepository implements SessionRepositoryInterface
             ->whereDate('session_date', '>=', $from->toDateString())
             ->whereDate('session_date', '<=', $to->toDateString())
             ->get()
-            ->filter(function (TherapySession $session) use ($from, $to) {
-                $startsAt = Carbon::parse($session->session_date->toDateString().' '.substr((string) $session->session_time, 0, 5));
-
-                return $startsAt->between($from, $to);
-            })
+            ->filter(fn (TherapySession $session) => SessionClock::fromStored($session->session_date, (string) $session->session_time)->between($from, $to))
             ->values();
     }
 
