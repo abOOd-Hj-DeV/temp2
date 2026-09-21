@@ -3,6 +3,7 @@
 namespace App\Services\Files;
 
 use App\Enums\UserRole;
+use App\Models\Message;
 use App\Models\Payment;
 use App\Models\Therapist;
 use App\Models\User;
@@ -20,6 +21,7 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
  *   uploads/{user_id}/{purpose}/…   generic uploads (owner + staff)
  *   payment-proofs/{patient_id}/…   owner patient + finance/staff
  *   licenses/{therapist_id}/…       owner therapist + staff
+ *   chat/{conversation_id}/…        the two conversation participants only (no staff)
  */
 class SecureFileService
 {
@@ -102,7 +104,7 @@ class SecureFileService
             }
         }
 
-        if (! preg_match('#^(uploads|payment-proofs|licenses)/[0-9a-f-]{36}/#i', $path)) {
+        if (! preg_match('#^(uploads|payment-proofs|licenses|chat)/[0-9a-f-]{36}/#i', $path)) {
             throw new AccessDeniedHttpException('Invalid path.');
         }
 
@@ -121,7 +123,25 @@ class SecureFileService
             'uploads' => $isOwner || $isStaff,
             'payment-proofs' => ($isOwner && Payment::where('proof_file_path', $path)->exists()) || $isFinance,
             'licenses' => ($isOwner && Therapist::where('license_file_path', $path)->exists()) || $isStaff,
+            'chat' => $this->isChatParticipant($user, $path),
             default => false,
         };
+    }
+
+    private function isChatParticipant(User $user, string $path): bool
+    {
+        $column = match ($user->role) {
+            UserRole::PATIENT => 'patient_id',
+            UserRole::THERAPIST => 'therapist_id',
+            default => null,
+        };
+
+        if ($column === null) {
+            return false;
+        }
+
+        return Message::where('file_path', $path)
+            ->whereHas('conversation', fn ($q) => $q->where($column, $user->id))
+            ->exists();
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services\Patient;
 
+use App\Models\Conversation;
 use App\Models\IdempotencyKey;
 use App\Models\User;
 use App\Services\AuditLogService;
@@ -25,6 +26,10 @@ use Illuminate\Support\Str;
  * Files the person uploaded (payment proofs, licence documents) are removed
  * from the uploads disk. A storage failure rolls back the database changes;
  * retries skip files that have already been removed.
+ *
+ * Chat threads the person took part in are removed entirely (messages and
+ * attachments): the encrypted bodies cannot be redacted and are private
+ * correspondence rather than clinical record.
  */
 class AccountAnonymizer
 {
@@ -79,6 +84,7 @@ class AccountAnonymizer
             $this->redactFreeText($user->id, $identifiers);
             DB::table('mood_logs')->where('patient_id', $user->id)->whereNotNull('notes')->update(['notes' => null]);
             $this->purgeOwnedFiles($user);
+            $this->purgeConversations($user);
 
             $this->audit->record($user, AuditLogService::ACCOUNT_ANONYMIZED, $user->id);
         });
@@ -119,6 +125,27 @@ class AccountAnonymizer
 
         if ($user->therapist?->license_file_path !== null) {
             $user->therapist->forceFill(['license_file_path' => null])->save();
+        }
+    }
+
+    private function purgeConversations(User $user): void
+    {
+        $disk = Storage::disk(config('sakina.uploads_disk', 'local'));
+
+        $conversations = Conversation::where('patient_id', $user->id)
+            ->orWhere('therapist_id', $user->id)
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($conversations as $conversation) {
+            $directory = "chat/{$conversation->id}";
+
+            if ($disk->exists($directory) && (! $disk->deleteDirectory($directory) || $disk->exists($directory))) {
+                throw new \RuntimeException("Chat attachments [{$directory}] could not be deleted; anonymization aborted.");
+            }
+
+            $conversation->messages()->delete();
+            $conversation->delete();
         }
     }
 

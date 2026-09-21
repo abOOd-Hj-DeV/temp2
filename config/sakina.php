@@ -73,4 +73,21 @@ return [
 
     // Max bytes for non-multipart (JSON/form) request bodies. 0 disables.
     'max_json_body_bytes' => (int) env('SAKINA_MAX_JSON_BODY_BYTES', 262144),
+
+    // Patient <-> assigned-therapist chat. Attachments are accepted only when the
+    // sniffed MIME type is listed here; the size ceiling is per attachment kind (KB).
+    'chat' => [
+        'max_message_chars' => (int) env('SAKINA_CHAT_MAX_MESSAGE_CHARS', 4000),
+        'attachment_mimes' => [
+            'image' => ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+            'audio' => ['audio/mpeg', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'audio/wav', 'audio/x-wav', 'audio/webm'],
+            'file' => ['application/pdf', 'text/plain',
+                'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+        ],
+        'attachment_max_kb' => [
+            'image' => (int) env('SAKINA_CHAT_IMAGE_MAX_KB', 5120),
+            'audio' => (int) env('SAKINA_CHAT_AUDIO_MAX_KB', 10240),
+            'file' => (int) env('SAKINA_CHAT_FILE_MAX_KB', 10240),
+        ],
+    ],
 ];

@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Models\IdempotencyKey as StoredKey;
 use Closure;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
@@ -126,11 +127,16 @@ class IdempotencyKey
             return new JsonResponse(['message' => 'A request with this Idempotency-Key is still being processed.'], 409);
         }
 
-        return new JsonResponse(
-            json_decode((string) $stored->response_body, true) ?? [],
-            (int) $stored->response_code,
-            ['Idempotency-Replayed' => 'true']
-        );
+        try {
+            $rawBody = (string) $stored->response_body;
+        } catch (DecryptException) {
+            // Row written before bodies were encrypted; still a valid replay.
+            $rawBody = (string) $stored->getRawOriginal('response_body');
+        }
+
+        $body = json_decode($rawBody, true) ?? [];
+
+        return new JsonResponse($body, (int) $stored->response_code, ['Idempotency-Replayed' => 'true']);
     }
 
     private function fingerprint(Request $request): string
