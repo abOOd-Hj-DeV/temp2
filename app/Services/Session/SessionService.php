@@ -302,15 +302,7 @@ class SessionService
                 throw new ConflictException('A reschedule request is already awaiting the therapist.');
             }
 
-            $therapist = Therapist::whereKey($locked->therapist_id)->firstOrFail();
-
-            if (! $this->therapistService->isSlotAvailable($therapist, $date, $time, $locked->id)) {
-                throw ValidationException::withMessages(['session_time' => 'The requested slot is not available.']);
-            }
-
-            if ($this->sessions->hasConflict($therapist->user_id, $date->toDateString(), $time, $locked->id)) {
-                throw ValidationException::withMessages(['session_time' => 'The requested slot is already taken.']);
-            }
+            $this->assertRescheduleTarget($locked, $date, $time);
 
             $this->sessions->update($locked, [
                 'reschedule_date' => $date->toDateString(),
@@ -360,9 +352,9 @@ class SessionService
                 ];
 
                 if ($approve) {
-                    if ($this->sessions->hasConflict($locked->therapist_id, $newDate, $newTime, $locked->id)) {
-                        throw ValidationException::withMessages(['session_time' => 'The requested slot is no longer free.']);
-                    }
+                    // Re-validated in full: availability, the package window and
+                    // the quota may all have changed since the patient asked.
+                    $this->assertRescheduleTarget($locked, Carbon::parse($newDate, 'UTC'), $newTime);
 
                     $this->sessions->update($locked, $clear + [
                         'session_date' => $newDate,
@@ -516,7 +508,49 @@ class SessionService
      * local calendar), the package's session total must not be exhausted, and
      * the per-day quota is counted on the patient's local day.
      */
-    private function assertWithinPackageQuota(Patient $patient, Subscription $subscription, Carbon $startsAt): void
+    /**
+     * A reschedule target (UTC date + HH:MM) must be in the future, inside the
+     * therapist's availability, free of conflicts and, for a package session,
+     * still inside the package term and daily quota (the moved session itself
+     * is not counted against that quota).
+     */
+    private function assertRescheduleTarget(TherapySession $session, Carbon $date, string $time): void
+    {
+        $startsAt = SessionClock::fromStored($date, $time);
+
+        if ($startsAt->lte(now())) {
+            throw ValidationException::withMessages(['session_date' => 'The session must be in the future.']);
+        }
+
+        $therapist = Therapist::whereKey($session->therapist_id)->firstOrFail();
+
+        if (! $this->therapistService->isSlotAvailable($therapist, $date, $time, $session->id)) {
+            throw ValidationException::withMessages(['session_time' => 'The requested slot is not available.']);
+        }
+
+        if ($this->sessions->hasConflict($therapist->user_id, $date->toDateString(), $time, $session->id)) {
+            throw ValidationException::withMessages(['session_time' => 'The requested slot is already taken.']);
+        }
+
+        if ($session->subscription_id === null) {
+            return;
+        }
+
+        $subscription = Subscription::find($session->subscription_id);
+        $patient = Patient::with('user')->find($session->patient_id);
+
+        if ($subscription === null || $patient === null) {
+            return;
+        }
+
+        if (! $subscription->is_active) {
+            throw ValidationException::withMessages(['subscription' => 'The package covering this session is no longer active.']);
+        }
+
+        $this->assertWithinPackageQuota($patient, $subscription, $startsAt, $session->id);
+    }
+
+    private function assertWithinPackageQuota(Patient $patient, Subscription $subscription, Carbon $startsAt, ?string $movingSessionId = null): void
     {
         $timezone = $patient->user?->timezone() ?? config('app.timezone', 'UTC');
         $localDate = $startsAt->copy()->setTimezone($timezone)->toDateString();
@@ -528,7 +562,8 @@ class SessionService
             ]);
         }
 
-        if ($subscription->sessions_total !== null
+        if ($movingSessionId === null
+            && $subscription->sessions_total !== null
             && $this->sessions->countNonCancelledForSubscription($subscription->id) >= $subscription->sessions_total) {
             throw ValidationException::withMessages([
                 'subscription' => "Your package's {$subscription->sessions_total} sessions are all booked.",
@@ -538,7 +573,7 @@ class SessionService
         $daily = $subscription->daily_sessions_quota ?? 1;
         [$dayStart, $dayEnd] = SessionClock::dayBounds($localDate, $timezone);
 
-        if ($this->sessions->countNonCancelledForSubscriptionBetween($subscription->id, $dayStart, $dayEnd) >= $daily) {
+        if ($this->sessions->countNonCancelledForSubscriptionBetween($subscription->id, $dayStart, $dayEnd, $movingSessionId) >= $daily) {
             throw ValidationException::withMessages([
                 'session_date' => "Your package allows {$daily} session(s) per day.",
             ]);

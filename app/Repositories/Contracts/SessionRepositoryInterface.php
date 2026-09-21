@@ -66,7 +66,7 @@ interface SessionRepositoryInterface
     public function countNonCancelledForSubscription(string $subscriptionId): int;
 
     /** Non-cancelled sessions charged to a package starting within [$from, $to) (UTC instants). */
-    public function countNonCancelledForSubscriptionBetween(string $subscriptionId, Carbon $from, Carbon $to): int;
+    public function countNonCancelledForSubscriptionBetween(string $subscriptionId, Carbon $from, Carbon $to, ?string $excludeSessionId = null): int;
 
     /**
      * Cancel every pending/confirmed session charged to a package (called

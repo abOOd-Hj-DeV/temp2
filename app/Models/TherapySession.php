@@ -66,6 +66,11 @@ class TherapySession extends Model
         return $this->belongsTo(Therapist::class, 'therapist_id', 'user_id');
     }
 
+    public function subscription(): BelongsTo
+    {
+        return $this->belongsTo(Subscription::class);
+    }
+
     public function statusLogs(): HasMany
     {
         return $this->hasMany(SessionStatusLog::class, 'session_id');

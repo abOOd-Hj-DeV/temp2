@@ -34,6 +34,13 @@ return Application::configure(basePath: dirname(__DIR__))
         'middleware' => ['api', 'auth:api', 'status'],
     ])
     ->withMiddleware(function (Middleware $middleware): void {
+        // Behind TLS-terminating proxies (nginx/load balancer) so isSecure(),
+        // HSTS, signed URLs and client IPs for throttling are correct.
+        // Comma-separated proxy IPs/CIDRs, or '*' when the app is never reachable directly.
+        if (($proxies = (string) env('TRUSTED_PROXIES', '')) !== '') {
+            $middleware->trustProxies(at: $proxies === '*' ? '*' : array_map('trim', explode(',', $proxies)));
+        }
+
         // API-only backend: every api/* request negotiates JSON so auth
         // failures return 401 JSON instead of a redirect to a web login.
         // Global so unmatched routes (404) and other pre-routing responses carry the headers too.

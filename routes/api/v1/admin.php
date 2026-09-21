@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\Admin\PatientDirectoryController;
 use App\Http\Controllers\Api\V1\Admin\PaymentReviewController;
 use App\Http\Controllers\Api\V1\Admin\ProgramController;
 use App\Http\Controllers\Api\V1\Admin\RedFlagController;
+use App\Http\Controllers\Api\V1\Admin\SessionManagementController;
 use App\Http\Controllers\Api\V1\Admin\SubscriptionManagementController;
 use App\Http\Controllers\Api\V1\Admin\TherapistApprovalController;
 use App\Http\Controllers\Api\V1\Admin\TherapistSwitchReviewController;
@@ -74,10 +75,12 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
         Route::patch('/users/{user}/active', [UserAccountController::class, 'setActive'])->whereUuid('user');
     });
 
-    // Patient roster: staff plus the clinical supervisor who triages their risk.
+    // Patient roster and session oversight: staff plus the clinical supervisor.
     Route::middleware("role:{$clinicalRoles}")->group(function () {
         Route::get('/patients', [PatientDirectoryController::class, 'index']);
         Route::get('/patients/{id}', [PatientDirectoryController::class, 'show'])->whereUuid('id');
+        Route::post('/sessions/{session}/cancel', [SessionManagementController::class, 'cancel'])
+            ->whereUuid('session')->middleware('idempotent');
     });
 
     // Head Master (clinical_supervisor) owns the self-help programme library.

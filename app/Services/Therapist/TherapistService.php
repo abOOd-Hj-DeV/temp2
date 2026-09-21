@@ -209,10 +209,16 @@ class TherapistService
 
     /**
      * Therapist submits their license for admin review. Status returns to
-     * pending until an admin decides.
+     * pending until an admin decides. An already-approved therapist cannot
+     * resubmit (it would silently drop them out of the directory); licence
+     * changes after approval go through management.
      */
     public function submitForApproval(Therapist $therapist, ?UploadedFile $license = null): Therapist
     {
+        if ($therapist->approval_status === ApprovalStatus::APPROVED) {
+            throw new ConflictException('Your profile is already approved. Contact management to update your licence.');
+        }
+
         if (! $license && ! $therapist->license_file_path) {
             throw ValidationException::withMessages(['license' => 'A license file is required before submitting for approval.']);
         }

@@ -134,10 +134,11 @@ class SessionRepository implements SessionRepositoryInterface
             ->count();
     }
 
-    public function countNonCancelledForSubscriptionBetween(string $subscriptionId, Carbon $from, Carbon $to): int
+    public function countNonCancelledForSubscriptionBetween(string $subscriptionId, Carbon $from, Carbon $to, ?string $excludeSessionId = null): int
     {
         return TherapySession::where('subscription_id', $subscriptionId)
             ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->when($excludeSessionId, fn ($q) => $q->whereKeyNot($excludeSessionId))
             ->whereDate('session_date', '>=', $from->copy()->utc()->toDateString())
             ->whereDate('session_date', '<=', $to->copy()->utc()->toDateString())
             ->get(['session_date', 'session_time'])

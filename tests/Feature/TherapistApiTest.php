@@ -176,6 +176,7 @@ class TherapistApiTest extends TestCase
 
     public function test_approval_flow_repending_then_admin_approve(): void
     {
+        $this->therapist->update(['approval_status' => 'rejected']);
         Sanctum::actingAs($this->therapistUser, ['*'], 'api');
         $this->postJson('/api/v1/therapists/me/approval')->assertStatus(422);
 

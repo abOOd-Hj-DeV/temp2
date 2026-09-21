@@ -7,6 +7,7 @@ use App\Enums\SessionStatus;
 use App\Exceptions\ConflictException;
 use App\Models\Subscription;
 use App\Models\Therapist;
+use App\Models\TherapySession;
 use App\Models\User;
 use App\Models\WalletWithdrawal;
 use App\Services\AuditLogService;
@@ -18,18 +19,21 @@ use Illuminate\Validation\ValidationException;
  * Therapist wallet, derived (not stored) from the ledger of record:
  *
  *   earned     = Σ price × (1 − commission) over sessions that are COMPLETED
- *                and PAID for this therapist, plus Σ package price × (1 − commission)
- *                over approved packages attributed to this therapist once at
- *                least one covered session was completed with confirmed attendance
- *   pending    = same formulas over PAID sessions not yet completed and
- *                approved packages not yet delivered
+ *                and PAID for this therapist, plus Σ (package price ÷ sessions_total)
+ *                × (1 − commission) for every package session this therapist
+ *                completed with confirmed attendance
+ *   pending    = same formulas over PAID sessions not yet completed and the
+ *                undelivered part of live packages currently assigned to this
+ *                therapist (a cancelled package has no pending value: it is not
+ *                refunded and its remainder is not owed to anyone)
  *   withdrawn  = Σ withdrawals in approved|paid
  *   reserved   = Σ withdrawals still pending review
  *   available  = earned − withdrawn − reserved
  *
  * A package is priced as a whole: its covered sessions carry price 0 and the
- * therapist's share is taken from the package price regardless of how many
- * sessions it contains.
+ * therapist's share is taken from the package price in equal per-session
+ * slices, so a mid-package therapist change splits the revenue by the
+ * sessions each therapist actually delivered.
  */
 class WalletService
 {
@@ -38,11 +42,11 @@ class WalletService
     public function summary(Therapist $therapist): array
     {
         $rate = $this->commissionRate();
-        $earnedGross = (float) $this->earnedSessions($therapist)->sum('price')
-            + (float) $this->earnedPackages($therapist)->sum('price');
+        $earnedPackageGross = $this->earnedPackageGross($therapist);
+        $earnedGross = (float) $this->earnedSessions($therapist)->sum('price') + $earnedPackageGross;
         $pendingGross = (float) $this->paidSessions($therapist)->sum('price')
-            + (float) $this->approvedPackages($therapist)->sum('price')
-            - $earnedGross;
+            - (float) $this->earnedSessions($therapist)->sum('price')
+            + $this->pendingPackageGross($therapist);
 
         $earned = round((float) $earnedGross * (1 - $rate), 2);
         $pending = round((float) $pendingGross * (1 - $rate), 2);
@@ -61,7 +65,7 @@ class WalletService
             'available' => round(max(0, $earned - $withdrawn - $reserved), 2),
             'min_withdrawal' => (float) config('sakina.min_withdrawal_amount', 20),
             'completed_paid_sessions' => $this->earnedSessions($therapist)->count(),
-            'earned_packages' => $this->earnedPackages($therapist)->count(),
+            'earned_package_sessions' => $this->earnedPackageSessions($therapist)->count(),
             'recent_withdrawals' => $therapist->withdrawals()->latest()->limit(10)->get()
                 ->map(fn (WalletWithdrawal $w) => $this->withdrawalToArray($w))->all(),
         ];
@@ -180,18 +184,48 @@ class WalletService
             ->where('status', '!=', SessionStatus::CANCELLED->value);
     }
 
-    private function approvedPackages(Therapist $therapist)
+    /** Package sessions this therapist delivered, regardless of who holds the package now. */
+    private function earnedPackageSessions(Therapist $therapist)
     {
-        return Subscription::where('therapist_id', $therapist->user_id)
-            ->where('verification_status', 'approved');
+        return $therapist->sessions()
+            ->where('status', SessionStatus::COMPLETED->value)
+            ->whereNotNull('attendance_confirmed_at')
+            ->whereHas('subscription', fn ($q) => $q->where('verification_status', 'approved'));
     }
 
-    private function earnedPackages(Therapist $therapist)
+    private function earnedPackageGross(Therapist $therapist): float
     {
-        return $this->approvedPackages($therapist)
-            ->whereHas('sessions', fn ($q) => $q
+        return $this->earnedPackageSessions($therapist)
+            ->with('subscription:id,price,sessions_total')
+            ->get()
+            ->sum(fn (TherapySession $s) => self::sessionShare($s->subscription));
+    }
+
+    /**
+     * Undelivered slices of live packages assigned to this therapist: the
+     * package's remaining sessions after every therapist's delivered ones.
+     */
+    private function pendingPackageGross(Therapist $therapist): float
+    {
+        return Subscription::where('therapist_id', $therapist->user_id)
+            ->where('verification_status', 'approved')
+            ->whereNull('cancelled_at')
+            ->whereDate('end_date', '>=', now()->toDateString())
+            ->withCount(['sessions as delivered_count' => fn ($q) => $q
                 ->where('status', SessionStatus::COMPLETED->value)
-                ->whereNotNull('attendance_confirmed_at'));
+                ->whereNotNull('attendance_confirmed_at')])
+            ->get()
+            ->sum(fn (Subscription $s) => self::sessionShare($s)
+                * max(0, (int) $s->sessions_total - (int) $s->delivered_count));
+    }
+
+    private static function sessionShare(?Subscription $subscription): float
+    {
+        if ($subscription === null || (int) $subscription->sessions_total <= 0) {
+            return 0.0;
+        }
+
+        return (float) $subscription->price / (int) $subscription->sessions_total;
     }
 
     private function commissionRate(): float

@@ -27,6 +27,8 @@ class AuditLogService
 
     public const SUBSCRIPTION_CANCELLED = 'subscription.cancelled';
 
+    public const SESSION_CANCELLED_BY_STAFF = 'session.cancelled_by_staff';
+
     public const RED_FLAG_UPDATED = 'red_flag.updated';
 
     public const RED_FLAG_ASSIGNED = 'red_flag.assigned';
