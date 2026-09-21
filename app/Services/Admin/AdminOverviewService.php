@@ -72,6 +72,7 @@ class AdminOverviewService
                         ->where('reviewed_at', '>=', now()->subDays(30))->sum('amount')
                 ),
                 'active_subscriptions' => Subscription::where('verification_status', 'approved')
+                    ->whereNull('cancelled_at')
                     ->whereDate('end_date', '>=', $today)->count(),
                 'pending_withdrawals' => WalletWithdrawal::where('status', 'pending')->count(),
                 'pending_withdrawals_amount' => $this->money(WalletWithdrawal::where('status', 'pending')->sum('amount')),

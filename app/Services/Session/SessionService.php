@@ -88,13 +88,19 @@ class SessionService
                 $subscription = $this->subscriptions->activeForPatient($patient->user_id);
                 $coveringSubscription = null;
 
+                // With an active package every session, including the first,
+                // is charged to it; the free trial exists for patients who
+                // have not bought yet.
                 if ($subscription !== null) {
                     $subscription = Subscription::whereKey($subscription->id)->lockForUpdate()->firstOrFail();
-                    $this->assertWithinPackageQuota($patient, $subscription, $date);
+                    $this->assertWithinPackageQuota($patient, $subscription, SessionClock::fromStored($date, $time));
+                    $coveringSubscription = $subscription;
+                }
 
-                    if (! $isInitial) {
-                        $coveringSubscription = $subscription;
-                    }
+                if (! $isInitial && $coveringSubscription === null && ! config('sakina.package_policy.allow_pay_per_session')) {
+                    throw ValidationException::withMessages([
+                        'subscription' => 'An active treatment package is required to book further sessions.',
+                    ]);
                 }
 
                 $isFree = $isInitial || $coveringSubscription !== null;
@@ -505,25 +511,34 @@ class SessionService
     }
 
     /**
-     * Package limits frozen on the subscription at purchase: total sessions
-     * over its term and sessions per calendar day.
+     * Package coverage rules, evaluated against the UTC start instant of the
+     * requested slot: the slot must fall inside the package term (patient's
+     * local calendar), the package's session total must not be exhausted, and
+     * the per-day quota is counted on the patient's local day.
      */
-    private function assertWithinPackageQuota(Patient $patient, Subscription $subscription, Carbon $date): void
+    private function assertWithinPackageQuota(Patient $patient, Subscription $subscription, Carbon $startsAt): void
     {
-        $from = $subscription->start_date?->toDateString() ?? $date->toDateString();
-        $to = $subscription->end_date?->toDateString() ?? $date->toDateString();
+        $timezone = $patient->user?->timezone() ?? config('app.timezone', 'UTC');
+        $localDate = $startsAt->copy()->setTimezone($timezone)->toDateString();
+
+        if (($subscription->start_date !== null && $localDate < $subscription->start_date->toDateString())
+            || ($subscription->end_date !== null && $localDate > $subscription->end_date->toDateString())) {
+            throw ValidationException::withMessages([
+                'session_date' => 'Your package does not cover this date.',
+            ]);
+        }
 
         if ($subscription->sessions_total !== null
-            && $this->sessions->countNonCancelledForPatientInRange($patient->user_id, $from, $to) >= $subscription->sessions_total) {
+            && $this->sessions->countNonCancelledForSubscription($subscription->id) >= $subscription->sessions_total) {
             throw ValidationException::withMessages([
                 'subscription' => "Your package's {$subscription->sessions_total} sessions are all booked.",
             ]);
         }
 
         $daily = $subscription->daily_sessions_quota ?? 1;
-        $day = $date->toDateString();
+        [$dayStart, $dayEnd] = SessionClock::dayBounds($localDate, $timezone);
 
-        if ($this->sessions->countNonCancelledForPatientInRange($patient->user_id, $day, $day) >= $daily) {
+        if ($this->sessions->countNonCancelledForSubscriptionBetween($subscription->id, $dayStart, $dayEnd) >= $daily) {
             throw ValidationException::withMessages([
                 'session_date' => "Your package allows {$daily} session(s) per day.",
             ]);

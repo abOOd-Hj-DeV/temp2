@@ -2,7 +2,6 @@
 
 namespace App\Repositories\Eloquent;
 
-use App\Enums\PaymentStatus;
 use App\Enums\SessionStatus;
 use App\Models\TherapySession;
 use App\Repositories\Contracts\SessionRepositoryInterface;
@@ -124,10 +123,50 @@ class SessionRepository implements SessionRepositoryInterface
     public function hasUsedInitialSession(string $patientId): bool
     {
         return TherapySession::where('patient_id', $patientId)
-            ->where(fn ($q) => $q
-                ->where('status', '!=', SessionStatus::CANCELLED->value)
-                ->orWhere('payment_status', PaymentStatus::FREE->value))
+            ->where('status', '!=', SessionStatus::CANCELLED->value)
             ->exists();
+    }
+
+    public function countNonCancelledForSubscription(string $subscriptionId): int
+    {
+        return TherapySession::where('subscription_id', $subscriptionId)
+            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->count();
+    }
+
+    public function countNonCancelledForSubscriptionBetween(string $subscriptionId, Carbon $from, Carbon $to): int
+    {
+        return TherapySession::where('subscription_id', $subscriptionId)
+            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->whereDate('session_date', '>=', $from->copy()->utc()->toDateString())
+            ->whereDate('session_date', '<=', $to->copy()->utc()->toDateString())
+            ->get(['session_date', 'session_time'])
+            ->filter(function (TherapySession $s) use ($from, $to) {
+                $startsAt = SessionClock::fromStored($s->session_date, (string) $s->session_time);
+
+                return $startsAt->gte($from) && $startsAt->lt($to);
+            })
+            ->count();
+    }
+
+    public function cancelOpenForSubscription(string $subscriptionId): Collection
+    {
+        $open = TherapySession::where('subscription_id', $subscriptionId)
+            ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+            ->lockForUpdate()
+            ->get();
+
+        if ($open->isNotEmpty()) {
+            TherapySession::whereIn('id', $open->modelKeys())->update([
+                'status' => SessionStatus::CANCELLED->value,
+                'reschedule_date' => null,
+                'reschedule_time' => null,
+                'reschedule_requested_by' => null,
+                'reschedule_requested_at' => null,
+            ]);
+        }
+
+        return $open;
     }
 
     public function dueForReminder(Carbon $from, Carbon $to, string $flag): Collection

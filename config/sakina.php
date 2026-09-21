@@ -27,6 +27,18 @@ return [
     // Hours before the scheduled start after which a patient can no longer cancel.
     'cancellation_notice_hours' => env('SAKINA_CANCELLATION_NOTICE_HOURS', 12),
 
+    // Commercial model: patients buy a treatment package (CBT content + sessions),
+    // never a single session. The first session and the introductory module are
+    // free so the product is tried before purchase; cancelling a package stops
+    // future sessions and never refunds money.
+    'package_policy' => [
+        // When false, a patient without an active package can only book the free
+        // initial session and must purchase a package for anything further.
+        'allow_pay_per_session' => (bool) env('SAKINA_ALLOW_PAY_PER_SESSION', true),
+        'refundable' => false,
+        'cancellation_unit' => 'package',
+    ],
+
     // Hosts a therapist may use for the meeting link, keyed by session medium.
     'meeting_link_hosts' => [
         'zoom' => ['zoom.us'],

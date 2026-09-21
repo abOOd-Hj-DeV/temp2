@@ -25,6 +25,8 @@ class AuditLogService
 
     public const SUBSCRIPTION_CREATED = 'subscription.created';
 
+    public const SUBSCRIPTION_CANCELLED = 'subscription.cancelled';
+
     public const RED_FLAG_UPDATED = 'red_flag.updated';
 
     public const RED_FLAG_ASSIGNED = 'red_flag.assigned';

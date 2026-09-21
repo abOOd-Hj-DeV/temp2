@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\V1\Subscription\StoreSubscriptionRequest;
 use App\Models\Package;
+use App\Models\Subscription;
 use App\Services\Package\PackageService;
 use App\Services\Subscription\SubscriptionService;
 use Illuminate\Http\JsonResponse;
@@ -17,11 +18,33 @@ class SubscriptionController extends Controller
         private PackageService $packages,
     ) {}
 
-    /** Published packages a patient may buy. */
+    /** Published packages a patient may buy, with the commercial terms. */
     public function packages(): JsonResponse
     {
         return response()->json([
             'data' => $this->packages->published()->map(fn (Package $p) => $this->packages->toArray($p)),
+            'policy' => SubscriptionService::policy(),
+        ]);
+    }
+
+    /**
+     * Patient cancels their own package: remaining sessions are cancelled,
+     * nothing is refunded.
+     */
+    public function cancel(Request $request, string $subscription): JsonResponse
+    {
+        $data = $request->validate(['reason' => ['nullable', 'string', 'max:500']]);
+
+        $model = Subscription::where('patient_id', $this->patientOf($request)->user_id)
+            ->whereKey($subscription)
+            ->firstOrFail();
+
+        $result = $this->subscriptionService->cancel($model, $request->user(), $data['reason'] ?? null);
+
+        return response()->json([
+            'message' => 'Package cancelled. Remaining sessions were cancelled; payments are not refunded.',
+            'subscription' => $this->subscriptionService->toArray($result['subscription']),
+            'cancelled_sessions' => $result['cancelled_sessions'],
         ]);
     }
 
@@ -63,6 +86,7 @@ class SubscriptionController extends Controller
 
         return response()->json([
             'message' => 'Subscription created. Your payment proof is under review.',
+            'policy' => SubscriptionService::policy(),
             'subscription' => $this->subscriptionService->toArray($result['subscription']),
             'payment' => [
                 'id' => $result['payment']->id,

@@ -130,6 +130,7 @@ class ComplianceService
             ->whereIn('user_id', Subscription::query()
                 ->select('patient_id')
                 ->where('verification_status', 'approved')
+                ->whereNull('cancelled_at')
                 ->whereNotNull('end_date')
                 ->where('end_date', '>=', now()->toDateString()))
             ->lazyById(200, 'user_id');

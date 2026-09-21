@@ -83,6 +83,7 @@ class AdminPatientService
 
         $subscription = Subscription::where('patient_id', $patient->user_id)
             ->where('verification_status', 'approved')
+            ->whereNull('cancelled_at')
             ->orderByDesc('end_date')
             ->first();
 
@@ -108,12 +109,7 @@ class AdminPatientService
                 'type' => $subscription->type,
                 'package_id' => $subscription->package_id,
                 'sessions_total' => $subscription->sessions_total,
-                // Same quota rule as SessionService: non-cancelled sessions within the term.
-                'sessions_used' => $this->sessions->countNonCancelledForPatientInRange(
-                    $patient->user_id,
-                    $subscription->start_date?->toDateString() ?? now()->toDateString(),
-                    $subscription->end_date?->toDateString() ?? now()->toDateString(),
-                ),
+                'sessions_used' => $this->sessions->countNonCancelledForSubscription($subscription->id),
                 'start_date' => $subscription->start_date?->toDateString(),
                 'end_date' => $subscription->end_date?->toDateString(),
                 'is_active' => $subscription->is_active,

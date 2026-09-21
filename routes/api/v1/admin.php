@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\Admin\PatientDirectoryController;
 use App\Http\Controllers\Api\V1\Admin\PaymentReviewController;
 use App\Http\Controllers\Api\V1\Admin\ProgramController;
 use App\Http\Controllers\Api\V1\Admin\RedFlagController;
+use App\Http\Controllers\Api\V1\Admin\SubscriptionManagementController;
 use App\Http\Controllers\Api\V1\Admin\TherapistApprovalController;
 use App\Http\Controllers\Api\V1\Admin\TherapistSwitchReviewController;
 use App\Http\Controllers\Api\V1\Admin\UserAccountController;
@@ -38,6 +39,9 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
         Route::get('/payments', [PaymentReviewController::class, 'pending']);
         Route::post('/payments/{payment}/review', [PaymentReviewController::class, 'review'])
             ->whereUuid('payment')->middleware('idempotent');
+
+        Route::post('/subscriptions/{subscription}/cancel', [SubscriptionManagementController::class, 'cancel'])
+            ->whereUuid('subscription')->middleware('idempotent');
 
         Route::get('/withdrawals', [WithdrawalReviewController::class, 'index']);
         Route::post('/withdrawals/{withdrawal}/review', [WithdrawalReviewController::class, 'review'])
