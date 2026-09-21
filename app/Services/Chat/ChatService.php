@@ -387,10 +387,28 @@ class ChatService
         return [
             'file_path' => $path,
             'attachment_type' => $type,
-            'attachment_name' => SecureFileService::safeOriginalName($file->getClientOriginalName()),
+            'attachment_name' => $this->displayName($file),
             'attachment_mime' => (string) $file->getMimeType(),
             'attachment_size' => (int) $file->getSize(),
         ];
+    }
+
+    /**
+     * The download name keeps the client's base name but carries the extension
+     * of the sniffed type, so a PNG uploaded as "scan.pdf" is served as "scan.png".
+     */
+    private function displayName(UploadedFile $file): string
+    {
+        $name = SecureFileService::safeOriginalName($file->getClientOriginalName());
+        $extension = $file->guessExtension();
+
+        if ($extension === null) {
+            return $name;
+        }
+
+        $base = pathinfo($name, PATHINFO_FILENAME);
+
+        return ($base === '' ? 'attachment' : $base).'.'.$extension;
     }
 
     private function attachmentTypeFor(string $mime): ?string

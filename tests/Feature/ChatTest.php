@@ -327,6 +327,25 @@ class ChatTest extends TestCase
 
         $this->assertSame($first->json('data.id'), $second->json('data.id'));
         $this->assertSame(1, Message::count());
+
+        $rawReplay = (string) DB::table('idempotency_keys')->where('key', 'chat-send-0001')->value('response_body');
+        $this->assertStringNotContainsString('once', $rawReplay);
+    }
+
+    public function test_attachment_display_name_follows_the_sniffed_type(): void
+    {
+        $png = UploadedFile::fake()->image('real.png', 10, 10);
+
+        $response = $this->send($this->patient, $this->therapist, [
+            'attachment' => $this->disguised(file_get_contents($png->getRealPath()), 'looks.pdf', 'application/pdf'),
+        ])->assertCreated()
+            ->assertJsonPath('data.attachment.type', 'image')
+            ->assertJsonPath('data.attachment.mime_type', 'image/png')
+            ->assertJsonPath('data.attachment.name', 'looks.png');
+
+        $this->as($this->therapist)->get("/api/v1/chat/attachments/{$response->json('data.id')}", ['Accept' => 'application/json'])
+            ->assertOk()
+            ->assertHeader('Content-Disposition', 'attachment; filename=looks.png');
     }
 
     // ------------------------------------------------------------- attachments

@@ -16,7 +16,10 @@ class IdempotencyKey extends Model
         'locked_at', 'completed_at', 'expires_at',
     ];
 
+    // Replayed bodies can echo private payloads (e.g. chat text), so they are
+    // stored encrypted like the source records they mirror.
     protected $casts = [
+        'response_body' => 'encrypted',
         'locked_at' => 'datetime',
         'completed_at' => 'datetime',
         'expires_at' => 'datetime',

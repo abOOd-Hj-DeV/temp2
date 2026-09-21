@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Models\IdempotencyKey as StoredKey;
 use Closure;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
@@ -126,11 +127,13 @@ class IdempotencyKey
             return new JsonResponse(['message' => 'A request with this Idempotency-Key is still being processed.'], 409);
         }
 
-        return new JsonResponse(
-            json_decode((string) $stored->response_body, true) ?? [],
-            (int) $stored->response_code,
-            ['Idempotency-Replayed' => 'true']
-        );
+        try {
+            $body = json_decode((string) $stored->response_body, true) ?? [];
+        } catch (DecryptException) {
+            return new JsonResponse(['message' => 'Idempotency-Key expired. Retry with a new key.'], 409);
+        }
+
+        return new JsonResponse($body, (int) $stored->response_code, ['Idempotency-Replayed' => 'true']);
     }
 
     private function fingerprint(Request $request): string
