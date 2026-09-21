@@ -212,6 +212,10 @@ class PaymentReviewService
             throw new ConflictException("The subscription is already {$subscription->verification_status}.");
         }
 
+        if ($subscription->cancelled_at !== null && $approved) {
+            throw new ConflictException('The patient cancelled this package before approval; reject the payment instead.');
+        }
+
         if (! $approved) {
             $this->subscriptions->update($subscription, ['verification_status' => 'rejected']);
 

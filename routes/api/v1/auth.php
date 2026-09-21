@@ -24,6 +24,9 @@ Route::prefix('auth')->name('auth.')->group(function () {
     Route::post('/reset-password', [AuthController::class, 'resetPassword'])
         ->middleware('throttle:5,1')->name('password.reset');
 
+    Route::post('/activate', [AuthController::class, 'activate'])
+        ->middleware('throttle:5,1')->name('activate');
+
     Route::post('/status', [AuthController::class, 'checkStatus'])
         ->middleware('throttle:20,1')->name('status.check');
 
@@ -32,6 +35,7 @@ Route::prefix('auth')->name('auth.')->group(function () {
 
     Route::middleware('auth:api')->group(function () {
         Route::get('/user', [AuthController::class, 'user'])->name('user');
+        Route::put('/user/timezone', [AuthController::class, 'updateTimezone'])->name('user.timezone');
         Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
         Route::post('/logout-all', [AuthController::class, 'logoutAll'])->name('logout.all');
     });

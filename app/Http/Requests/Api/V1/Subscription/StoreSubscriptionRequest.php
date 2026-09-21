@@ -12,7 +12,7 @@ class StoreSubscriptionRequest extends FormRequest
             // Package id (preferred) or legacy code such as "4_weeks".
             'package_id' => 'required_without:type|nullable|uuid',
             'type' => 'required_without:package_id|nullable|string|max:64',
-            'proof' => 'required|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'proof' => 'required|file|mimes:jpg,jpeg,png,pdf|mimetypes:image/jpeg,image/png,application/pdf|max:5120',
         ];
     }
 }

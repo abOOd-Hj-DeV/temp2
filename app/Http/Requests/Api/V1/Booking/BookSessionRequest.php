@@ -10,7 +10,7 @@ class BookSessionRequest extends FormRequest
     {
         return [
             'therapist_id' => 'required|uuid|exists:therapists,user_id',
-            'session_date' => 'required|date|after_or_equal:today',
+            'session_date' => 'required|date_format:Y-m-d',
             'session_time' => 'required|date_format:H:i',
             'medium' => 'required|in:zoom,meet,whatsapp',
         ];

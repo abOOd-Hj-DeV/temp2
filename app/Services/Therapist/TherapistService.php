@@ -12,6 +12,7 @@ use App\Repositories\Contracts\SessionRepositoryInterface;
 use App\Repositories\Contracts\TherapistRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
+use App\Support\SessionClock;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
@@ -52,58 +53,99 @@ class TherapistService
     }
 
     /**
-     * Bookable start times for a therapist on a date, derived from the
-     * availability windows minus already-booked and past slots.
+     * Bookable UTC start times ("HH:MM") for a therapist on a UTC calendar
+     * date — the storage view used by booking to validate a requested slot.
      *
      * @return array<int, string> e.g. ['09:00','10:00']
      */
     public function availableSlots(Therapist $therapist, Carbon $date, ?string $excludeSessionId = null): array
     {
-        $day = strtolower($date->format('l'));
-        $windows = $therapist->availability[$day] ?? [];
+        [$from, $to] = SessionClock::dayBounds($date->toDateString(), SessionClock::UTC);
 
-        if (! is_array($windows)) {
-            return [];
-        }
+        return array_map(
+            fn (Carbon $slot) => $slot->format('H:i'),
+            $this->availableSlotInstants($therapist, $from, $to, $excludeSessionId)
+        );
+    }
 
-        $duration = TherapySession::durationMinutes();
-        $booked = $this->sessions->bookedTimesFor($therapist->user_id, $date->toDateString(), $excludeSessionId);
-        $now = now();
-        $slots = [];
+    /**
+     * Bookable slots on the viewer's local calendar date, expressed in the
+     * viewer's zone (what the booking UI shows and sends back).
+     *
+     * @return array<int, array{time: string, starts_at: string}>
+     */
+    public function availableSlotsFor(Therapist $therapist, string $localDate, string $timezone, ?string $excludeSessionId = null): array
+    {
+        [$from, $to] = SessionClock::dayBounds($localDate, $timezone);
 
-        foreach ($windows as $window) {
-            if (! is_string($window) || ! preg_match('/^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/', $window, $m)) {
-                continue;
-            }
-
-            $start = $date->copy()->setTime((int) $m[1], (int) $m[2]);
-            $end = $date->copy()->setTime((int) $m[3], (int) $m[4]);
-
-            for ($slot = $start->copy(); $slot->copy()->addMinutes($duration)->lte($end); $slot->addMinutes($duration)) {
-                $time = $slot->format('H:i');
-
-                if ($slot->lte($now)) {
-                    continue;
-                }
-
-                foreach ($booked as $bookedTime) {
-                    if (TherapySession::startTimesOverlap($bookedTime, $time)) {
-                        continue 2;
-                    }
-                }
-
-                $slots[] = $time;
-            }
-        }
-
-        sort($slots);
-
-        return $slots;
+        return array_map(
+            fn (Carbon $slot) => [
+                'time' => $slot->copy()->setTimezone($timezone)->format('H:i'),
+                'starts_at' => $slot->toISOString(),
+            ],
+            $this->availableSlotInstants($therapist, $from, $to, $excludeSessionId)
+        );
     }
 
     public function isSlotAvailable(Therapist $therapist, Carbon $date, string $time, ?string $excludeSessionId = null): bool
     {
         return in_array(substr($time, 0, 5), $this->availableSlots($therapist, $date, $excludeSessionId), true);
+    }
+
+    /**
+     * Availability windows are wall-clock hours in the therapist's own zone;
+     * they are expanded per local day, converted to UTC instants and then
+     * filtered to [$from, $to), the past, and overlaps with booked sessions.
+     *
+     * @return array<int, Carbon> sorted UTC instants
+     */
+    private function availableSlotInstants(Therapist $therapist, Carbon $from, Carbon $to, ?string $excludeSessionId): array
+    {
+        $tz = $therapist->user?->timezone() ?? SessionClock::UTC;
+        $duration = TherapySession::durationMinutes();
+        $now = now();
+        $booked = $this->sessions->bookedStartsBetween($therapist->user_id, $from->copy()->subDay(), $to->copy()->addDay(), $excludeSessionId);
+        $slots = [];
+
+        $day = $from->copy()->setTimezone($tz)->startOfDay();
+        $lastDay = $to->copy()->setTimezone($tz)->startOfDay();
+
+        for (; $day->lte($lastDay); $day->addDay()) {
+            $windows = $therapist->availability[strtolower($day->format('l'))] ?? [];
+
+            if (! is_array($windows)) {
+                continue;
+            }
+
+            foreach ($windows as $window) {
+                if (! is_string($window) || ! preg_match('/^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/', $window, $m)) {
+                    continue;
+                }
+
+                $start = $day->copy()->setTime((int) $m[1], (int) $m[2]);
+                $end = $day->copy()->setTime((int) $m[3], (int) $m[4]);
+
+                for ($slot = $start->copy(); $slot->copy()->addMinutes($duration)->lte($end); $slot->addMinutes($duration)) {
+                    $utc = $slot->copy()->utc();
+
+                    if ($utc->lt($from) || $utc->gte($to) || $utc->lte($now)) {
+                        continue;
+                    }
+
+                    foreach ($booked as $bookedStart) {
+                        if (abs($utc->diffInMinutes($bookedStart, false)) < $duration) {
+                            continue 2;
+                        }
+                    }
+
+                    $slots[] = $utc;
+                }
+            }
+        }
+
+        usort($slots, fn (Carbon $a, Carbon $b) => $a <=> $b);
+
+        return $slots;
     }
 
     /**
@@ -167,10 +209,16 @@ class TherapistService
 
     /**
      * Therapist submits their license for admin review. Status returns to
-     * pending until an admin decides.
+     * pending until an admin decides. An already-approved therapist cannot
+     * resubmit (it would silently drop them out of the directory); licence
+     * changes after approval go through management.
      */
     public function submitForApproval(Therapist $therapist, ?UploadedFile $license = null): Therapist
     {
+        if ($therapist->approval_status === ApprovalStatus::APPROVED) {
+            throw new ConflictException('Your profile is already approved. Contact management to update your licence.');
+        }
+
         if (! $license && ! $therapist->license_file_path) {
             throw ValidationException::withMessages(['license' => 'A license file is required before submitting for approval.']);
         }
@@ -247,8 +295,15 @@ class TherapistService
 
     public function dashboard(Therapist $therapist): array
     {
-        $today = now()->toDateString();
+        $tz = $therapist->user?->timezone() ?? SessionClock::UTC;
+        [$dayStart, $dayEnd] = SessionClock::dayBounds(now($tz)->toDateString(), $tz);
         $base = $therapist->sessions();
+        $upcoming = (clone $base)
+            ->whereDate('session_date', '>=', $dayStart->toDateString())
+            ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+            ->orderBy('session_date')->orderBy('session_time')
+            ->get()
+            ->filter(fn (TherapySession $s) => SessionClock::fromStored($s->session_date, (string) $s->session_time)->gte($dayStart));
 
         return [
             'therapist' => $this->toArray($therapist),
@@ -259,16 +314,12 @@ class TherapistService
                 'pending' => (clone $base)->where('status', SessionStatus::PENDING->value)->count(),
                 'confirmed' => (clone $base)->where('status', SessionStatus::CONFIRMED->value)->count(),
                 'completed' => (clone $base)->where('status', SessionStatus::COMPLETED->value)->count(),
-                'today' => (clone $base)->whereDate('session_date', $today)
-                    ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])->count(),
+                'today' => $upcoming
+                    ->filter(fn (TherapySession $s) => SessionClock::fromStored($s->session_date, (string) $s->session_time)->lt($dayEnd))
+                    ->count(),
             ],
-            'upcoming_sessions' => (clone $base)
-                ->whereDate('session_date', '>=', $today)
-                ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
-                ->orderBy('session_date')->orderBy('session_time')
-                ->limit(10)
-                ->get()
-                ->all(),
+            'timezone' => $tz,
+            'upcoming_sessions' => $upcoming->take(10)->values()->all(),
         ];
     }
 

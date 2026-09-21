@@ -9,7 +9,7 @@ class SubmitApprovalRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'license' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'license' => 'nullable|file|mimes:jpg,jpeg,png,pdf|mimetypes:image/jpeg,image/png,application/pdf|max:5120',
         ];
     }
 }

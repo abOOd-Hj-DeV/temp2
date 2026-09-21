@@ -30,6 +30,7 @@ use App\Notifications\TherapistApprovalNotification;
 use App\Notifications\TherapistSwitchDecidedNotification;
 use App\Services\Notifications\NotificationDispatcher;
 use App\Support\DurableQueue;
+use App\Support\SessionClock;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Facades\Log;
@@ -220,9 +221,8 @@ class NotificationService
         $this->dispatcher->whatsApp(
             $session->patient?->user,
             sprintf(
-                'Sakina: your session on %s at %s was booked%s.',
-                $session->session_date?->toDateString(),
-                substr((string) $session->session_time, 0, 5),
+                'Sakina: your session on %s was booked%s.',
+                $this->localSessionTime($session, $session->patient?->user),
                 $session->is_initial ? ' (initial session, free of charge)' : ''
             ),
             $key,
@@ -380,7 +380,7 @@ class NotificationService
 
         $this->dispatcher->whatsApp(
             $session->patient?->user,
-            sprintf('Sakina reminder: your session is on %s at %s.', $session->session_date?->toDateString(), substr((string) $session->session_time, 0, 5)),
+            sprintf('Sakina reminder: your session is on %s.', $this->localSessionTime($session, $session->patient?->user)),
             $key,
             ['session_id' => $session->id, 'window' => $window]
         );
@@ -393,5 +393,20 @@ class NotificationService
     public function notifyOnce(?User $user, Notification $notification, string $eventKey): bool
     {
         return $this->dispatcher->inApp($user, $notification, $eventKey);
+    }
+
+    /** "YYYY-MM-DD at HH:MM (Zone)" in the recipient's timezone. */
+    private function localSessionTime(TherapySession $session, ?User $recipient): string
+    {
+        if ($session->session_date === null || $session->session_time === null) {
+            return 'the scheduled time';
+        }
+
+        $local = SessionClock::localize(
+            SessionClock::fromStored($session->session_date, (string) $session->session_time),
+            $recipient?->timezone() ?? SessionClock::UTC
+        );
+
+        return sprintf('%s at %s (%s)', $local['date'], $local['time'], $local['timezone']);
     }
 }

@@ -9,7 +9,7 @@ class SubmitProofRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'proof' => 'required|file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'proof' => 'required|file|mimes:jpg,jpeg,png,pdf|mimetypes:image/jpeg,image/png,application/pdf|max:5120',
         ];
     }
 }

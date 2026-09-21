@@ -27,6 +27,7 @@ class SubscriptionRepository implements SubscriptionRepositoryInterface
     {
         return Subscription::where('patient_id', $patientId)
             ->where('verification_status', 'approved')
+            ->whereNull('cancelled_at')
             ->whereNotNull('end_date')
             ->where('end_date', '>=', now()->toDateString())
             ->latest('end_date')
@@ -36,6 +37,7 @@ class SubscriptionRepository implements SubscriptionRepositoryInterface
     public function hasPendingOrActive(string $patientId): bool
     {
         return Subscription::where('patient_id', $patientId)
+            ->whereNull('cancelled_at')
             ->where(function ($q) {
                 $q->where('verification_status', 'pending')
                     ->orWhere(function ($q2) {

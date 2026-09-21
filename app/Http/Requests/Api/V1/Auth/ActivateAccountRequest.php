@@ -2,10 +2,11 @@
 
 namespace App\Http\Requests\Api\V1\Auth;
 
+use App\Services\Account\StaffAccountService;
 use App\Support\PhoneNumber;
 use Illuminate\Foundation\Http\FormRequest;
 
-class RegisterRequest extends FormRequest
+class ActivateAccountRequest extends FormRequest
 {
     protected function prepareForValidation(): void
     {
@@ -13,8 +14,8 @@ class RegisterRequest extends FormRequest
             $this->merge(['whatsapp_number' => PhoneNumber::normalize($this->input('whatsapp_number')) ?? $this->input('whatsapp_number')]);
         }
 
-        if (is_string($this->input('email'))) {
-            $this->merge(['email' => mb_strtolower(trim($this->input('email')))]);
+        if (is_string($this->input('code'))) {
+            $this->merge(['code' => strtoupper(trim($this->input('code')))]);
         }
     }
 
@@ -26,11 +27,9 @@ class RegisterRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'email', 'max:255'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
             'whatsapp_number' => ['required', 'string', 'regex:/^\+?[0-9]{8,15}$/'],
-            'timezone' => ['nullable', 'string', 'timezone:all'],
+            'code' => ['required', 'string', 'size:'.StaffAccountService::CODE_LENGTH, 'alpha_num:ascii'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
         ];
     }
 }

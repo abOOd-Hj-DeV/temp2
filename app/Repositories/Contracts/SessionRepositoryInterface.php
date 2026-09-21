@@ -27,6 +27,14 @@ interface SessionRepositoryInterface
     public function bookedTimesFor(string $therapistId, string $date, ?string $excludeSessionId = null): array;
 
     /**
+     * UTC start instants of pending/confirmed sessions for a therapist whose
+     * stored date falls within [$from, $to] (inclusive, UTC dates).
+     *
+     * @return array<int, Carbon>
+     */
+    public function bookedStartsBetween(string $therapistId, Carbon $from, Carbon $to, ?string $excludeSessionId = null): array;
+
+    /**
      * Count of sessions a patient has that were never cancelled — used to
      * derive is_initial (the first real booking).
      */
@@ -49,10 +57,23 @@ interface SessionRepositoryInterface
     public function countNonCancelledBetween(string $patientId, string $therapistId): int;
 
     /**
-     * Whether the patient has already consumed their initial session:
-     * any non-cancelled session, or any free session even if cancelled.
+     * Whether the patient has already consumed their initial session: any
+     * session that was not cancelled. A cancelled trial is not consumed.
      */
     public function hasUsedInitialSession(string $patientId): bool;
+
+    /** Non-cancelled sessions charged to a package (its quota usage). */
+    public function countNonCancelledForSubscription(string $subscriptionId): int;
+
+    /** Non-cancelled sessions charged to a package starting within [$from, $to) (UTC instants). */
+    public function countNonCancelledForSubscriptionBetween(string $subscriptionId, Carbon $from, Carbon $to, ?string $excludeSessionId = null): int;
+
+    /**
+     * Cancel every pending/confirmed session charged to a package (called
+     * inside the package-cancellation transaction). Returns the affected rows
+     * as they were before the update.
+     */
+    public function cancelOpenForSubscription(string $subscriptionId): Collection;
 
     /** Confirmed sessions starting within the given window that still need a reminder. */
     public function dueForReminder(Carbon $from, Carbon $to, string $flag): Collection;

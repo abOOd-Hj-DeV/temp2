@@ -25,6 +25,10 @@ class AuditLogService
 
     public const SUBSCRIPTION_CREATED = 'subscription.created';
 
+    public const SUBSCRIPTION_CANCELLED = 'subscription.cancelled';
+
+    public const SESSION_CANCELLED_BY_STAFF = 'session.cancelled_by_staff';
+
     public const RED_FLAG_UPDATED = 'red_flag.updated';
 
     public const RED_FLAG_ASSIGNED = 'red_flag.assigned';
@@ -90,6 +94,16 @@ class AuditLogService
     public const MODULE_UPDATED = 'module.updated';
 
     public const MODULE_DELETED = 'module.deleted';
+
+    public const STAFF_ACCOUNT_CREATED = 'staff.account_created';
+
+    public const STAFF_INVITATION_RESENT = 'staff.invitation_resent';
+
+    public const STAFF_ACCOUNT_ACTIVATED = 'staff.account_activated';
+
+    public const STAFF_ACCOUNT_DEACTIVATED = 'staff.account_deactivated';
+
+    public const STAFF_ACCOUNT_REACTIVATED = 'staff.account_reactivated';
 
     /** Every action name declared on this class, for filter validation. */
     public static function actions(): array

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Api\V1\Auth\ActivateAccountRequest;
 use App\Http\Requests\Api\V1\Auth\ForgotPasswordRequest;
 use App\Http\Requests\Api\V1\Auth\LoginRequest;
 use App\Http\Requests\Api\V1\Auth\OTPRequest;
@@ -65,6 +66,17 @@ class AuthController extends Controller
         );
     }
 
+    public function activate(ActivateAccountRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->auth->activate(
+                $request->input('whatsapp_number'),
+                $request->input('code'),
+                $request->input('password')
+            )
+        );
+    }
+
     public function checkStatus(Request $request): JsonResponse
     {
         $request->validate(['whatsapp_number' => ['required', 'string']]);
@@ -77,6 +89,13 @@ class AuthController extends Controller
     public function user(Request $request): JsonResponse
     {
         return response()->json($this->auth->currentUser($request->user()));
+    }
+
+    public function updateTimezone(Request $request): JsonResponse
+    {
+        $data = $request->validate(['timezone' => ['required', 'string', 'timezone:all']]);
+
+        return response()->json($this->auth->updateTimezone($request->user(), $data['timezone']));
     }
 
     public function logout(Request $request): JsonResponse

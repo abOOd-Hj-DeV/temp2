@@ -21,7 +21,7 @@ class User extends Authenticatable
 
     protected $fillable = [
         'name', 'email', 'password', 'role',
-        'whatsapp_number', 'is_active', 'last_login',
+        'whatsapp_number', 'timezone', 'is_active', 'last_login',
         'phone_verified_at', 'login_attempts', 'deletion_scheduled_at',
     ];
 
@@ -142,5 +142,13 @@ class User extends Authenticatable
     public function isVerified(): bool
     {
         return $this->phone_verified_at !== null;
+    }
+
+    /** IANA zone used to interpret and display this user's dates; storage stays UTC. */
+    public function timezone(): string
+    {
+        $tz = (string) ($this->attributes['timezone'] ?? '');
+
+        return $tz !== '' && in_array($tz, \DateTimeZone::listIdentifiers(), true) ? $tz : (string) config('app.timezone', 'UTC');
     }
 }

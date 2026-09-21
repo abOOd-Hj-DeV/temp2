@@ -24,7 +24,7 @@ class WalletWithdrawal extends Model
 
     protected $casts = [
         'amount' => 'decimal:2',
-        'payout_details' => 'array',
+        'payout_details' => 'encrypted:array',
         'reviewed_at' => 'datetime',
     ];
 

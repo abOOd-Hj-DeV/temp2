@@ -9,8 +9,11 @@ use App\Http\Controllers\Api\V1\Admin\PatientDirectoryController;
 use App\Http\Controllers\Api\V1\Admin\PaymentReviewController;
 use App\Http\Controllers\Api\V1\Admin\ProgramController;
 use App\Http\Controllers\Api\V1\Admin\RedFlagController;
+use App\Http\Controllers\Api\V1\Admin\SessionManagementController;
+use App\Http\Controllers\Api\V1\Admin\SubscriptionManagementController;
 use App\Http\Controllers\Api\V1\Admin\TherapistApprovalController;
 use App\Http\Controllers\Api\V1\Admin\TherapistSwitchReviewController;
+use App\Http\Controllers\Api\V1\Admin\UserAccountController;
 use App\Http\Controllers\Api\V1\Admin\WithdrawalReviewController;
 use Illuminate\Support\Facades\Route;
 
@@ -38,6 +41,9 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
         Route::post('/payments/{payment}/review', [PaymentReviewController::class, 'review'])
             ->whereUuid('payment')->middleware('idempotent');
 
+        Route::post('/subscriptions/{subscription}/cancel', [SubscriptionManagementController::class, 'cancel'])
+            ->whereUuid('subscription')->middleware('idempotent');
+
         Route::get('/withdrawals', [WithdrawalReviewController::class, 'index']);
         Route::post('/withdrawals/{withdrawal}/review', [WithdrawalReviewController::class, 'review'])
             ->whereUuid('withdrawal')->middleware('idempotent');
@@ -59,10 +65,22 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
 
     });
 
-    // Patient roster: staff plus the clinical supervisor who triages their risk.
+    // Staff/therapist accounts: the clinical supervisor may only create and
+    // manage therapists; the per-role matrix is enforced in StaffAccountService.
+    Route::middleware("role:{$clinicalRoles}")->group(function () {
+        Route::get('/users', [UserAccountController::class, 'index']);
+        Route::post('/users', [UserAccountController::class, 'store'])->middleware(['idempotent', 'throttle:20,1']);
+        Route::post('/users/{user}/invitation/resend', [UserAccountController::class, 'resendInvitation'])
+            ->whereUuid('user')->middleware('throttle:10,1');
+        Route::patch('/users/{user}/active', [UserAccountController::class, 'setActive'])->whereUuid('user');
+    });
+
+    // Patient roster and session oversight: staff plus the clinical supervisor.
     Route::middleware("role:{$clinicalRoles}")->group(function () {
         Route::get('/patients', [PatientDirectoryController::class, 'index']);
         Route::get('/patients/{id}', [PatientDirectoryController::class, 'show'])->whereUuid('id');
+        Route::post('/sessions/{session}/cancel', [SessionManagementController::class, 'cancel'])
+            ->whereUuid('session')->middleware('idempotent');
     });
 
     // Head Master (clinical_supervisor) owns the self-help programme library.

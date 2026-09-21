@@ -6,6 +6,7 @@ use App\Enums\ApprovalStatus;
 use App\Enums\SessionStatus;
 use App\Exceptions\ConflictException;
 use App\Models\Patient;
+use App\Models\Subscription;
 use App\Models\Therapist;
 use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
@@ -55,6 +56,16 @@ class TherapistSwitchService
 
         if ($patient->therapist_id === $newTherapistId) {
             throw ValidationException::withMessages(['new_therapist_id' => 'This is already your therapist.']);
+        }
+
+        $alreadySwitched = TherapistSwitch::where('subscription_id', $subscription->id)
+            ->where('status', 'approved')
+            ->exists();
+
+        if ($alreadySwitched) {
+            throw ValidationException::withMessages([
+                'therapist' => 'Only one therapist change is allowed per treatment package.',
+            ]);
         }
 
         if ($this->hasSessionWithinLockWindow($patient)) {
@@ -217,6 +228,22 @@ class TherapistSwitchService
 
                 Patient::whereKey($locked->patient_id)->lockForUpdate()->firstOrFail();
                 Patient::whereKey($locked->patient_id)->update(['therapist_id' => $target->user_id]);
+
+                // The package follows the patient: sessions delivered so far stay
+                // credited to the previous therapist, the remainder to the new one.
+                Subscription::whereKey($locked->subscription_id)
+                    ->whereNull('cancelled_at')
+                    ->update(['therapist_id' => $target->user_id]);
+
+                $this->syncClientsCount($target);
+
+                if ($locked->old_therapist_id) {
+                    $previous = Therapist::whereKey($locked->old_therapist_id)->lockForUpdate()->first();
+
+                    if ($previous) {
+                        $this->syncClientsCount($previous);
+                    }
+                }
             }
 
             $locked->update([
@@ -235,6 +262,17 @@ class TherapistSwitchService
         $this->notifications->deliver('therapistSwitchDecided', $switch);
 
         return $switch;
+    }
+
+    /** Distinct patients who are assigned to the therapist or hold a live session with them. */
+    private function syncClientsCount(Therapist $therapist): void
+    {
+        $fromSessions = $therapist->sessions()
+            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->pluck('patient_id');
+        $assigned = Patient::where('therapist_id', $therapist->user_id)->pluck('user_id');
+
+        $therapist->update(['clients_count' => $fromSessions->merge($assigned)->unique()->count()]);
     }
 
     private function supervisors(): Collection

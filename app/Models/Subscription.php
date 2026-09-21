@@ -15,6 +15,7 @@ class Subscription extends Model
     protected $fillable = [
         'patient_id', 'type', 'package_id', 'sessions_total', 'duration_days', 'daily_sessions_quota',
         'start_date', 'end_date', 'price', 'payment_proof_path', 'verification_status', 'content', 'therapist_id',
+        'cancelled_at', 'cancelled_by', 'cancellation_reason',
     ];
 
     protected $casts = [
@@ -25,6 +26,7 @@ class Subscription extends Model
         'end_date' => 'date',
         'price' => 'decimal:2',
         'content' => 'array',
+        'cancelled_at' => 'datetime',
     ];
 
     public function patient(): BelongsTo
@@ -55,6 +57,7 @@ class Subscription extends Model
     public function getIsActiveAttribute(): bool
     {
         return $this->verification_status === 'approved'
+            && $this->cancelled_at === null
             && $this->end_date !== null
             && $this->end_date->gte(now()->startOfDay());
     }
