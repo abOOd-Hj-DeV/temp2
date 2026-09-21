@@ -28,6 +28,11 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
+    // Token-authenticated clients authorize private channels at POST /api/v1/broadcasting/auth.
+    ->withBroadcasting(__DIR__.'/../routes/channels.php', [
+        'prefix' => 'api/v1',
+        'middleware' => ['api', 'auth:api', 'status'],
+    ])
     ->withMiddleware(function (Middleware $middleware): void {
         // API-only backend: every api/* request negotiates JSON so auth
         // failures return 401 JSON instead of a redirect to a web login.

@@ -71,6 +71,10 @@ class AuditLogService
 
     public const FILE_DOWNLOADED = 'file.downloaded';
 
+    public const CONVERSATION_OPENED = 'chat.conversation_opened';
+
+    public const CHAT_ATTACHMENT_SENT = 'chat.attachment_sent';
+
     public function record(User|string $actor, string $action, ?string $entityId = null, array $details = []): void
     {
         try {

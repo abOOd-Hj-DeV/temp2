@@ -9,6 +9,7 @@ use App\Enums\UserRole;
 use App\Jobs\RetryNotificationJob;
 use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\Assessment;
+use App\Models\Message;
 use App\Models\Patient;
 use App\Models\Payment;
 use App\Models\RedFlag;
@@ -17,6 +18,7 @@ use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Notifications\AssessmentCompletedNotification;
+use App\Notifications\ChatMessageReceivedNotification;
 use App\Notifications\PaymentProofPendingNotification;
 use App\Notifications\PaymentReviewedNotification;
 use App\Notifications\PaymentReviewOverdueNotification;
@@ -343,6 +345,15 @@ class NotificationService
         foreach ($supervisors as $supervisor) {
             $this->notifyOnce($supervisor, new TherapistSwitchDecidedNotification($switch), "therapist_switch.awaiting_supervisor:{$switch->id}");
         }
+    }
+
+    /**
+     * The chat layer calls this only for the first unread message of a burst,
+     * so a receiver gets one alert per unread run rather than one per message.
+     */
+    public function chatMessageReceived(Message $message): void
+    {
+        $this->notifyOnce($message->receiver, new ChatMessageReceivedNotification($message), "chat.message:{$message->id}");
     }
 
     /**
