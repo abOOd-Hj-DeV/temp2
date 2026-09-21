@@ -128,10 +128,13 @@ class IdempotencyKey
         }
 
         try {
-            $body = json_decode((string) $stored->response_body, true) ?? [];
+            $rawBody = (string) $stored->response_body;
         } catch (DecryptException) {
-            return new JsonResponse(['message' => 'Idempotency-Key expired. Retry with a new key.'], 409);
+            // Row written before bodies were encrypted; still a valid replay.
+            $rawBody = (string) $stored->getRawOriginal('response_body');
         }
+
+        $body = json_decode($rawBody, true) ?? [];
 
         return new JsonResponse($body, (int) $stored->response_code, ['Idempotency-Replayed' => 'true']);
     }

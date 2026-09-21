@@ -330,6 +330,12 @@ class ChatTest extends TestCase
 
         $rawReplay = (string) DB::table('idempotency_keys')->where('key', 'chat-send-0001')->value('response_body');
         $this->assertStringNotContainsString('once', $rawReplay);
+
+        // Rows stored before bodies were encrypted still replay instead of inviting a duplicate.
+        DB::table('idempotency_keys')->where('key', 'chat-send-0001')->update(['response_body' => $first->getContent()]);
+        $this->as($this->patient)->post("/api/v1/chat/{$this->therapist->id}", ['content' => 'once'], $headers)
+            ->assertCreated()->assertHeader('Idempotency-Replayed', 'true')->assertJsonPath('data.id', $first->json('data.id'));
+        $this->assertSame(1, Message::count());
     }
 
     public function test_attachment_display_name_follows_the_sniffed_type(): void
