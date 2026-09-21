@@ -7,7 +7,6 @@ use App\Enums\PaymentReviewStatus;
 use App\Enums\SessionStatus;
 use App\Enums\UserRole;
 use App\Jobs\RetryNotificationJob;
-use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\Assessment;
 use App\Models\Message;
 use App\Models\Patient;
@@ -29,27 +28,24 @@ use App\Notifications\SessionReminderNotification;
 use App\Notifications\SessionStatusChangedNotification;
 use App\Notifications\TherapistApprovalNotification;
 use App\Notifications\TherapistSwitchDecidedNotification;
+use App\Services\Notifications\NotificationDispatcher;
 use App\Support\DurableQueue;
 use Illuminate\Contracts\Bus\Dispatcher;
-use Illuminate\Database\UniqueConstraintViolationException;
-use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Notifications\Notification;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Ramsey\Uuid\Uuid;
 
 /**
- * Dispatches in-app (database) notifications and, for critical clinical
- * events, WhatsApp alerts to the responsible staff member.
+ * Decides who is told what for each domain event: in-app (database)
+ * notifications for every party, plus WhatsApp alerts for critical clinical
+ * and payment events. Channel delivery and the delivery ledger live in
+ * NotificationDispatcher.
  *
- * Delivery is idempotent per (event, recipient): the database notification
- * id is derived deterministically from the event key, so a replayed job or
- * a retried request cannot produce a second copy, and the WhatsApp message
- * is only queued the first time the event is recorded.
+ * Delivery is idempotent per (event, recipient): the WhatsApp message is
+ * only queued the first time the event is recorded for that recipient.
  */
 class NotificationService
 {
-    private const NAMESPACE = '5f5b1e7a-8c3b-4e0d-9a3c-2f1d0b6c7e11';
+    public function __construct(private NotificationDispatcher $dispatcher) {}
 
     /**
      * Run a notification method for a write that has already been committed.
@@ -105,20 +101,23 @@ class NotificationService
             return;
         }
 
+        $key = "red_flag.raised:{$redFlag->id}";
+
         foreach ($recipients as $recipient) {
-            if (! $this->notifyOnce($recipient, new RedFlagRaisedNotification($redFlag), "red_flag.raised:{$redFlag->id}")) {
+            if (! $this->notifyOnce($recipient, new RedFlagRaisedNotification($redFlag), $key)) {
                 continue;
             }
 
             // Message carries no patient identity: it goes through a third-party provider.
-            $this->sendWhatsAppSafe(
-                $recipient->whatsapp_number,
+            $this->dispatcher->whatsApp(
+                $recipient,
                 sprintf(
                     'Sakina alert: a %s red flag (%s priority) is awaiting your review. Ref %s.',
                     $redFlag->type->value,
                     $redFlag->priority->value,
                     substr($redFlag->id, 0, 8)
                 ),
+                $key,
                 ['red_flag_id' => $redFlag->id]
             );
         }
@@ -134,22 +133,21 @@ class NotificationService
             ->filter(fn ($user) => $user instanceof User)
             ->unique('id');
 
+        $key = "red_flag.priority_raised:{$redFlag->id}:{$redFlag->priority->value}";
+
         foreach ($recipients as $recipient) {
-            if (! $this->notifyOnce(
-                $recipient,
-                new RedFlagRaisedNotification($redFlag, 'red_flag_priority_raised'),
-                "red_flag.priority_raised:{$redFlag->id}:{$redFlag->priority->value}"
-            )) {
+            if (! $this->notifyOnce($recipient, new RedFlagRaisedNotification($redFlag, 'red_flag_priority_raised'), $key)) {
                 continue;
             }
 
-            $this->sendWhatsAppSafe(
-                $recipient->whatsapp_number,
+            $this->dispatcher->whatsApp(
+                $recipient,
                 sprintf(
                     'Sakina alert: red flag ref %s was raised to %s priority and needs your review.',
                     substr($redFlag->id, 0, 8),
                     $redFlag->priority->value
                 ),
+                $key,
                 ['red_flag_id' => $redFlag->id]
             );
         }
@@ -183,22 +181,24 @@ class NotificationService
     public function redFlagEscalated(RedFlag $redFlag, iterable $staff): int
     {
         $delivered = 0;
+        $key = "red_flag.escalated:{$redFlag->id}";
 
         foreach ($staff as $user) {
-            if (! $this->notifyOnce($user, new RedFlagEscalatedNotification($redFlag), "red_flag.escalated:{$redFlag->id}")) {
+            if (! $this->notifyOnce($user, new RedFlagEscalatedNotification($redFlag), $key)) {
                 continue;
             }
 
             $delivered++;
 
-            $this->sendWhatsAppSafe(
-                $user->whatsapp_number,
+            $this->dispatcher->whatsApp(
+                $user,
                 sprintf(
                     'Sakina ESCALATION: %s red flag (%s priority) ref %s is still open and unhandled. Immediate review required.',
                     $redFlag->type->value,
                     $redFlag->priority->value,
                     substr($redFlag->id, 0, 8)
                 ),
+                $key,
                 ['red_flag_id' => $redFlag->id, 'escalated_to' => $user->id]
             );
         }
@@ -217,14 +217,15 @@ class NotificationService
             return;
         }
 
-        $this->sendWhatsAppSafe(
-            $session->patient?->user?->whatsapp_number,
+        $this->dispatcher->whatsApp(
+            $session->patient?->user,
             sprintf(
                 'Sakina: your session on %s at %s was booked%s.',
                 $session->session_date?->toDateString(),
                 substr((string) $session->session_time, 0, 5),
                 $session->is_initial ? ' (initial session, free of charge)' : ''
             ),
+            $key,
             ['session_id' => $session->id]
         );
     }
@@ -264,18 +265,21 @@ class NotificationService
 
     public function paymentReviewOverdue(Payment $payment, iterable $reviewers, int $pendingHours): void
     {
+        $key = "payment.review_overdue:{$payment->id}";
+
         foreach ($reviewers as $reviewer) {
-            if (! $this->notifyOnce($reviewer, new PaymentReviewOverdueNotification($payment, $pendingHours), "payment.review_overdue:{$payment->id}")) {
+            if (! $this->notifyOnce($reviewer, new PaymentReviewOverdueNotification($payment, $pendingHours), $key)) {
                 continue;
             }
 
-            $this->sendWhatsAppSafe(
-                $reviewer->whatsapp_number,
+            $this->dispatcher->whatsApp(
+                $reviewer,
                 sprintf(
                     'Sakina: a payment proof (ref %s) has been awaiting review for %d hours. Please review it.',
                     substr($payment->id, 0, 8),
                     $pendingHours
                 ),
+                $key,
                 ['payment_id' => $payment->id, 'reviewer_id' => $reviewer->id]
             );
         }
@@ -290,14 +294,17 @@ class NotificationService
             return;
         }
 
-        if (! $this->notifyOnce($patientUser, new PaymentReviewedNotification($payment), "payment.reviewed:{$payment->id}:{$payment->status?->value}")) {
+        $key = "payment.reviewed:{$payment->id}:{$payment->status?->value}";
+
+        if (! $this->notifyOnce($patientUser, new PaymentReviewedNotification($payment), $key)) {
             return;
         }
 
         if ($payment->status === PaymentReviewStatus::APPROVED) {
-            $this->sendWhatsAppSafe(
-                $patientUser->whatsapp_number,
+            $this->dispatcher->whatsApp(
+                $patientUser,
                 'Sakina: your payment was approved. Thank you.',
+                $key,
                 ['payment_id' => $payment->id]
             );
         }
@@ -313,9 +320,10 @@ class NotificationService
         }
 
         if ($status === 'approved') {
-            $this->sendWhatsAppSafe(
-                $therapist->user?->whatsapp_number,
+            $this->dispatcher->whatsApp(
+                $therapist->user,
                 'Sakina: your therapist profile was approved. You can now receive clients.',
+                $key,
                 ['therapist_id' => $therapist->user_id]
             );
         }
@@ -370,9 +378,10 @@ class NotificationService
             return;
         }
 
-        $this->sendWhatsAppSafe(
-            $session->patient?->user?->whatsapp_number,
+        $this->dispatcher->whatsApp(
+            $session->patient?->user,
             sprintf('Sakina reminder: your session is on %s at %s.', $session->session_date?->toDateString(), substr((string) $session->session_time, 0, 5)),
+            $key,
             ['session_id' => $session->id, 'window' => $window]
         );
     }
@@ -383,41 +392,6 @@ class NotificationService
      */
     public function notifyOnce(?User $user, Notification $notification, string $eventKey): bool
     {
-        if (! $user instanceof User) {
-            return false;
-        }
-
-        $id = Uuid::uuid5(self::NAMESPACE, "{$eventKey}|{$user->id}")->toString();
-
-        if (DatabaseNotification::whereKey($id)->exists()) {
-            return false;
-        }
-
-        $notification->id = $id;
-
-        try {
-            DB::transaction(fn () => $user->notify($notification));
-        } catch (UniqueConstraintViolationException) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Queue a WhatsApp message (retried with backoff by the job). Enqueueing
-     * failures are logged so notification problems never abort the caller.
-     */
-    private function sendWhatsAppSafe(?string $number, string $message, array $context = []): void
-    {
-        if (empty($number)) {
-            return;
-        }
-
-        try {
-            SendWhatsAppMessageJob::dispatch($number, $message, $context);
-        } catch (\Throwable $e) {
-            Log::error('WhatsApp notification failed', $context + ['error' => $e->getMessage()]);
-        }
+        return $this->dispatcher->inApp($user, $notification, $eventKey);
     }
 }

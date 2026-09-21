@@ -75,6 +75,28 @@ class AuditLogService
 
     public const CHAT_ATTACHMENT_SENT = 'chat.attachment_sent';
 
+    public const PATIENT_RECORD_VIEWED = 'patient.record_viewed';
+
+    public const AUDIT_LOG_QUERIED = 'audit.queried';
+
+    public const PROGRAM_CREATED = 'program.created';
+
+    public const PROGRAM_UPDATED = 'program.updated';
+
+    public const PROGRAM_DELETED = 'program.deleted';
+
+    public const MODULE_CREATED = 'module.created';
+
+    public const MODULE_UPDATED = 'module.updated';
+
+    public const MODULE_DELETED = 'module.deleted';
+
+    /** Every action name declared on this class, for filter validation. */
+    public static function actions(): array
+    {
+        return array_values((new \ReflectionClass(self::class))->getConstants());
+    }
+
     public function record(User|string $actor, string $action, ?string $entityId = null, array $details = []): void
     {
         try {

@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Models\NotificationLog;
 use App\Services\Messaging\WhatsAppSenderInterface;
 use App\Support\DurableQueue;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -10,7 +11,9 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Reliable outbound WhatsApp delivery: provider failures are retried with
- * backoff instead of being lost with the originating HTTP request.
+ * backoff instead of being lost with the originating HTTP request. When the
+ * context carries a `notification_log_id`, every outcome is written back to
+ * that ledger row.
  */
 class SendWhatsAppMessageJob implements ShouldQueue
 {
@@ -31,13 +34,25 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
     public function handle(WhatsAppSenderInterface $whatsApp): void
     {
-        if ($whatsApp->send($this->phoneNumber, $this->message)) {
+        try {
+            $sent = $whatsApp->send($this->phoneNumber, $this->message);
+        } catch (\Throwable $e) {
+            $this->log()?->markFailed($e->getMessage());
+
+            throw $e;
+        }
+
+        if ($sent) {
+            $this->log()?->markSent();
+
             return;
         }
 
         $fallback = $this->job?->getConnectionName() === 'sync' ? DurableQueue::fallbackConnection() : null;
 
         if ($fallback === null) {
+            $this->log()?->markFailed('WhatsApp provider rejected the message.');
+
             throw new \RuntimeException('WhatsApp provider rejected the message.');
         }
 
@@ -46,14 +61,25 @@ class SendWhatsAppMessageJob implements ShouldQueue
             ->onConnection($fallback)
             ->delay(now()->addSeconds($this->backoff[0]));
 
+        $this->log()?->markFailed('WhatsApp provider rejected the message; deferred to the durable queue.');
+
         Log::warning('WhatsApp message deferred to the durable queue', $this->context + ['connection' => $fallback]);
     }
 
     public function failed(\Throwable $e): void
     {
+        $this->log()?->markPermanentlyFailed($e->getMessage());
+
         Log::critical('WhatsApp message permanently failed', $this->context + [
             'attempts' => $this->tries,
             'error' => $e->getMessage(),
         ]);
+    }
+
+    private function log(): ?NotificationLog
+    {
+        $id = $this->context['notification_log_id'] ?? null;
+
+        return is_string($id) ? NotificationLog::find($id) : null;
     }
 }
