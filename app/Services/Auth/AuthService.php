@@ -6,6 +6,7 @@ use App\Enums\UserRole;
 use App\Models\RefreshToken;
 use App\Models\User;
 use App\Repositories\Contracts\UserRepositoryInterface;
+use App\Services\Account\StaffAccountService;
 use App\Services\AuditLogService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -18,8 +19,9 @@ use Laravel\Sanctum\PersonalAccessToken;
 /**
  * Registration, WhatsApp-OTP verification, login, and password reset.
  *
- * Registration always creates a PATIENT. Elevated roles are granted
- * server-side by admins — never through this endpoint.
+ * Registration always creates a PATIENT. Staff and therapist accounts are
+ * created by management (StaffAccountService) and activated here with a
+ * one-time code — never through registration.
  */
 class AuthService
 {
@@ -35,6 +37,7 @@ class AuthService
         private UserRepositoryInterface $users,
         private OtpService $otp,
         private AuditLogService $audit,
+        private StaffAccountService $staffAccounts,
     ) {}
 
     public function register(array $data): array
@@ -42,7 +45,8 @@ class AuthService
         $data['email'] = mb_strtolower(trim($data['email']));
         $existing = $this->users->findByWhatsapp($data['whatsapp_number']);
 
-        if ($existing?->isVerified()) {
+        // Invited staff accounts awaiting activation are not resumable registrations.
+        if ($existing?->isVerified() || ($existing && $existing->role !== UserRole::PATIENT)) {
             throw ValidationException::withMessages([
                 'whatsapp_number' => __('This WhatsApp number is already registered.'),
             ]);
@@ -128,7 +132,7 @@ class AuthService
 
         // One indistinguishable failure for unknown, already-verified and wrong-code
         // cases so the endpoint cannot be used to enumerate accounts.
-        if (! $user || $user->isVerified() || ! $this->otp->verify($user, $code, OtpService::PURPOSE_REGISTRATION)) {
+        if (! $user || $user->isVerified() || $user->role !== UserRole::PATIENT || ! $this->otp->verify($user, $code, OtpService::PURPOSE_REGISTRATION)) {
             throw ValidationException::withMessages([
                 'otp' => __('Invalid or expired verification code.'),
             ]);
@@ -148,11 +152,32 @@ class AuthService
         );
     }
 
+    /** Redeem a management-issued activation code and sign the new staff member in. */
+    public function activate(string $whatsappNumber, string $code, string $password): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
+
+        // One indistinguishable failure for unknown numbers, active accounts and bad codes.
+        if (! $user || ! $this->staffAccounts->activate($user, $code, $password)) {
+            throw ValidationException::withMessages([
+                'code' => __('Invalid or expired activation code.'),
+            ]);
+        }
+
+        $user = $user->refresh();
+        Log::info('Staff account activated', ['user_id' => $user->id]);
+
+        return array_merge(
+            ['message' => __('Account activated successfully.'), 'user' => $user],
+            $this->issueToken($user)
+        );
+    }
+
     public function resendOtp(string $whatsappNumber): array
     {
         $user = $this->users->findByWhatsapp($whatsappNumber);
 
-        if ($user && ! $user->isVerified()) {
+        if ($user && ! $user->isVerified() && $user->role === UserRole::PATIENT) {
             if ($this->isUnverifiedExpired($user)) {
                 $this->users->delete($user);
             } else {

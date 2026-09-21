@@ -24,6 +24,9 @@ Route::prefix('auth')->name('auth.')->group(function () {
     Route::post('/reset-password', [AuthController::class, 'resetPassword'])
         ->middleware('throttle:5,1')->name('password.reset');
 
+    Route::post('/activate', [AuthController::class, 'activate'])
+        ->middleware('throttle:5,1')->name('activate');
+
     Route::post('/status', [AuthController::class, 'checkStatus'])
         ->middleware('throttle:20,1')->name('status.check');
 

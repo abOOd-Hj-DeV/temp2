@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Api\V1\Auth\ActivateAccountRequest;
 use App\Http\Requests\Api\V1\Auth\ForgotPasswordRequest;
 use App\Http\Requests\Api\V1\Auth\LoginRequest;
 use App\Http\Requests\Api\V1\Auth\OTPRequest;
@@ -60,6 +61,17 @@ class AuthController extends Controller
             $this->auth->resetPassword(
                 $request->input('whatsapp_number'),
                 $request->input('otp'),
+                $request->input('password')
+            )
+        );
+    }
+
+    public function activate(ActivateAccountRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->auth->activate(
+                $request->input('whatsapp_number'),
+                $request->input('code'),
                 $request->input('password')
             )
         );

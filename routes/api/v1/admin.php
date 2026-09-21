@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\V1\Admin\ProgramController;
 use App\Http\Controllers\Api\V1\Admin\RedFlagController;
 use App\Http\Controllers\Api\V1\Admin\TherapistApprovalController;
 use App\Http\Controllers\Api\V1\Admin\TherapistSwitchReviewController;
+use App\Http\Controllers\Api\V1\Admin\UserAccountController;
 use App\Http\Controllers\Api\V1\Admin\WithdrawalReviewController;
 use Illuminate\Support\Facades\Route;
 
@@ -57,6 +58,16 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
         Route::put('/therapists/{id}/clients-limit', [TherapistApprovalController::class, 'updateLimit'])
             ->whereUuid('id');
 
+    });
+
+    // Staff/therapist accounts: the clinical supervisor may only create and
+    // manage therapists; the per-role matrix is enforced in StaffAccountService.
+    Route::middleware("role:{$clinicalRoles}")->group(function () {
+        Route::get('/users', [UserAccountController::class, 'index']);
+        Route::post('/users', [UserAccountController::class, 'store'])->middleware(['idempotent', 'throttle:20,1']);
+        Route::post('/users/{user}/invitation/resend', [UserAccountController::class, 'resendInvitation'])
+            ->whereUuid('user')->middleware('throttle:10,1');
+        Route::patch('/users/{user}/active', [UserAccountController::class, 'setActive'])->whereUuid('user');
     });
 
     // Patient roster: staff plus the clinical supervisor who triages their risk.
