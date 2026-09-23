@@ -17,7 +17,7 @@ class Support extends Model
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'user_id', 'type', 'description', 'file_path',
+        'id', 'user_id', 'type', 'subject', 'description', 'file_path',
         'status', 'assigned_to',
     ];
 

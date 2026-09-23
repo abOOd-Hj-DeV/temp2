@@ -256,6 +256,24 @@ class NotificationService
         );
     }
 
+    public function sessionCancelRequested(TherapySession $session, User $recipient): void
+    {
+        $key = "session.cancel_requested:{$session->id}:{$session->cancel_requested_at?->timestamp}";
+
+        $this->notifyOnce($recipient, new SessionStatusChangedNotification($session, $session->status, $session->status, 'cancellation_requested'), $key);
+    }
+
+    public function sessionCancelDecided(TherapySession $session, bool $approved): void
+    {
+        $key = "session.cancel_decided:{$session->id}:{$session->updated_at?->timestamp}";
+
+        $this->notifyOnce(
+            $session->patient?->user,
+            new SessionStatusChangedNotification($session, $session->status, $session->status, $approved ? 'cancellation_approved' : 'cancellation_rejected'),
+            $key
+        );
+    }
+
     public function paymentProofSubmitted(Payment $payment, iterable $reviewers): void
     {
         foreach ($reviewers as $reviewer) {

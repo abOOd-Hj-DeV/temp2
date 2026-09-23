@@ -35,6 +35,10 @@ class MoodService
 
                 $payload = [
                     'score' => (int) $data['score'],
+                    'anxiety' => $data['anxiety'] ?? null,
+                    'energy' => $data['energy'] ?? null,
+                    'sleep_hours' => $data['sleep_hours'] ?? null,
+                    'activity_level' => $data['activity_level'] ?? null,
                     'notes' => $data['notes'] ?? null,
                 ];
 
@@ -81,7 +85,15 @@ class MoodService
 
         for ($d = $from->copy(); $d->lte(now()->startOfDay()); $d->addDay()) {
             $key = $d->toDateString();
-            $series[] = ['date' => $key, 'score' => $byDate->get($key)?->score];
+            $log = $byDate->get($key);
+            $series[] = [
+                'date' => $key,
+                'score' => $log?->score,
+                'anxiety' => $log?->anxiety,
+                'energy' => $log?->energy,
+                'sleep_hours' => $log?->sleep_hours,
+                'activity_level' => $log?->activity_level,
+            ];
         }
 
         $scores = $logs->pluck('score');
@@ -94,6 +106,10 @@ class MoodService
                 'average' => $scores->isEmpty() ? null : round($scores->avg(), 2),
                 'min' => $scores->min(),
                 'max' => $scores->max(),
+                'average_anxiety' => $this->avgColumn($logs, 'anxiety'),
+                'average_energy' => $this->avgColumn($logs, 'energy'),
+                'average_sleep_hours' => $this->avgColumn($logs, 'sleep_hours'),
+                'average_activity_level' => $this->avgColumn($logs, 'activity_level'),
                 'trend' => $this->trend($logs),
                 'current_low_streak' => $this->lowStreak($patient),
             ],
@@ -185,11 +201,22 @@ class MoodService
         };
     }
 
+    private function avgColumn($logs, string $column): ?float
+    {
+        $values = $logs->pluck($column)->filter(fn ($v) => $v !== null);
+
+        return $values->isEmpty() ? null : round($values->avg(), 2);
+    }
+
     public function toArray(MoodLog $log): array
     {
         return [
             'id' => $log->id,
             'score' => $log->score,
+            'anxiety' => $log->anxiety,
+            'energy' => $log->energy,
+            'sleep_hours' => $log->sleep_hours,
+            'activity_level' => $log->activity_level,
             'notes' => $log->notes,
             'log_date' => $log->log_date instanceof Carbon ? $log->log_date->toDateString() : $log->log_date,
             'alert_sent' => $log->alert_sent,

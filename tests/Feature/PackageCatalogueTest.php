@@ -136,9 +136,12 @@ class PackageCatalogueTest extends TestCase
         $book($d2, '09:00')->assertCreated();
         $book($d3, '09:00')->assertStatus(422)->assertJsonValidationErrorFor('subscription'); // total quota
 
-        // Cancelling frees a slot in the quota.
+        // Cancelling frees a slot in the quota (patient requests → therapist approves).
         $first = TherapySession::where('patient_id', $this->patient->user_id)->orderBy('session_date')->firstOrFail();
-        $this->postJson("/api/v1/sessions/{$first->id}/cancel")->assertOk();
+        $this->postJson("/api/v1/sessions/{$first->id}/cancel")->assertStatus(202);
+        Sanctum::actingAs($therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$first->id}/cancel/decide", ['approve' => true])->assertOk();
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
         $book($d3, '09:00')->assertCreated();
     }
 }

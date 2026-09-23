@@ -7,6 +7,7 @@ use App\Http\Requests\Api\V1\Patient\UpdateProfileRequest;
 use App\Services\Patient\PatientAccountService;
 use App\Services\Patient\PatientDashboardService;
 use App\Services\Patient\PatientProfileService;
+use App\Services\Therapist\TherapistContentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -17,6 +18,7 @@ class PatientController extends Controller
         private PatientProfileService $profiles,
         private PatientDashboardService $dashboard,
         private PatientAccountService $account,
+        private TherapistContentService $therapistContent,
     ) {}
 
     public function getProfile(Request $request): JsonResponse
@@ -61,6 +63,37 @@ class PatientController extends Controller
     public function getPrograms(Request $request): JsonResponse
     {
         return response()->json($this->dashboard->programs($request->user()));
+    }
+
+    public function getModule(Request $request, string $module): JsonResponse
+    {
+        return response()->json($this->dashboard->moduleDetail($request->user(), $module));
+    }
+
+    public function completeModule(Request $request, string $module): JsonResponse
+    {
+        return response()->json($this->dashboard->completeModule($request->user(), $module));
+    }
+
+    public function getEmergency(Request $request): JsonResponse
+    {
+        return response()->json($this->dashboard->emergency($request->user()));
+    }
+
+    public function getContent(Request $request): JsonResponse
+    {
+        $items = $this->therapistContent->forPatient(
+            $this->patientOf($request), $this->perPage($request)
+        );
+
+        return response()->json([
+            'data' => $items->through(fn ($i) => $this->therapistContent->toArray($i)),
+        ]);
+    }
+
+    public function postEmergencyAlert(Request $request): JsonResponse
+    {
+        return response()->json($this->dashboard->emergencyAlert($request->user()), 201);
     }
 
     public function deleteAccount(Request $request): JsonResponse

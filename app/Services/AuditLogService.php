@@ -105,6 +105,20 @@ class AuditLogService
 
     public const STAFF_ACCOUNT_REACTIVATED = 'staff.account_reactivated';
 
+    public const SUPPORT_TICKET_CREATED = 'support.ticket_created';
+
+    public const CONTENT_ITEM_CREATED = 'content.item_created';
+
+    public const CONTENT_ITEM_UPDATED = 'content.item_updated';
+
+    public const CONTENT_ITEM_DELETED = 'content.item_deleted';
+
+    public const PARALLEL_LAYER_SAVED = 'parallel_layer.saved';
+
+    public const SUPPORT_TICKET_ASSIGNED = 'support.ticket_assigned';
+
+    public const SUPPORT_TICKET_STATUS = 'support.ticket_status';
+
     /** Every action name declared on this class, for filter validation. */
     public static function actions(): array
     {

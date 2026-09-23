@@ -65,10 +65,26 @@ class SessionController extends Controller
     {
         $this->assertParticipant($request, $session);
 
+        $wasRequest = $request->user()->id === $session->patient_id;
         $session = $this->sessionService->cancel($session, $request->user());
 
         return response()->json([
-            'message' => 'Session cancelled.',
+            'message' => $wasRequest
+                ? 'Cancellation request sent to your therapist.'
+                : 'Session cancelled.',
+            'session' => $this->sessionService->toArray($session, $request->user()),
+        ], $wasRequest ? 202 : 200);
+    }
+
+    /** Therapist approves or rejects a patient's cancellation request. */
+    public function decideCancellation(Request $request, TherapySession $session): JsonResponse
+    {
+        $data = $request->validate(['approve' => 'required|boolean']);
+
+        $session = $this->sessionService->decideCancellation($session, $request->user(), (bool) $data['approve']);
+
+        return response()->json([
+            'message' => $data['approve'] ? 'Cancellation approved.' : 'Cancellation rejected — the session is forfeited.',
             'session' => $this->sessionService->toArray($session, $request->user()),
         ]);
     }

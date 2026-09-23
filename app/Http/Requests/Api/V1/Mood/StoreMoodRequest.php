@@ -21,6 +21,10 @@ class StoreMoodRequest extends FormRequest
                     $fail("The {$attribute} must be a JSON integer, not a string.");
                 }
             }],
+            'anxiety' => ['nullable', 'integer', 'min:1', 'max:10'],
+            'energy' => ['nullable', 'integer', 'min:1', 'max:10'],
+            'sleep_hours' => ['nullable', 'numeric', 'min:0', 'max:24'],
+            'activity_level' => ['nullable', 'integer', 'min:1', 'max:5'],
             'notes' => ['nullable', 'string', 'max:1000'],
             'log_date' => ['nullable', 'date_format:Y-m-d', 'before_or_equal:'.$today, 'after_or_equal:'.$today->copy()->subDays(7)->toDateString()],
         ];

@@ -45,6 +45,62 @@ class AuthFlowTest extends TestCase
         return $m[1];
     }
 
+    private function makeStaff(string $role = 'admin'): User
+    {
+        $u = User::create([
+            'name' => 'Staff', 'email' => 'staff@example.com',
+            'password' => bcrypt('Secret123!'),
+            'role' => $role, 'whatsapp_number' => '+963900000777',
+            'is_active' => true, 'phone_verified_at' => now(), 'login_attempts' => 0,
+        ]);
+        $u->assignRole($role);
+
+        return $u;
+    }
+
+    public function test_staff_login_requires_whatsapp_2fa(): void
+    {
+        $staff = $this->makeStaff('admin');
+
+        // Resend endpoint exists and is generic. (Called first: anonymous
+        // throttles share one bucket per IP, capped by this route's 3/min.)
+        $this->postJson('/api/v1/auth/login/2fa/resend', [
+            'whatsapp_number' => '+963900000777',
+        ])->assertOk();
+
+        // Password alone gets no token — an OTP goes out instead.
+        $this->postJson('/api/v1/auth/login', [
+            'whatsapp_number' => '+963900000777',
+            'password' => 'Secret123!',
+        ])->assertOk()
+            ->assertJsonPath('requires_2fa', true)
+            ->assertJsonMissing(['access_token']);
+        $this->assertNotEmpty($this->sender->messages);
+
+        // Wrong code rejected.
+        $this->postJson('/api/v1/auth/login/2fa', [
+            'whatsapp_number' => '+963900000777',
+            'otp' => '000000',
+        ])->assertUnprocessable();
+
+        // Right code mints a usable token.
+        $this->postJson('/api/v1/auth/login/2fa', [
+            'whatsapp_number' => '+963900000777',
+            'otp' => $this->lastOtp(),
+        ])->assertOk()
+            ->assertJsonStructure(['access_token', 'refresh_token']);
+
+        // Patient login stays one-factor (no 2FA).
+        $this->postJson('/api/v1/auth/register', $this->registerPayload(['whatsapp_number' => '+963900000002']));
+        $this->postJson('/api/v1/auth/otp/verify', [
+            'whatsapp_number' => '+963900000002', 'otp' => $this->lastOtp(),
+        ]);
+        $this->postJson('/api/v1/auth/login', [
+            'whatsapp_number' => '+963900000002',
+            'password' => 'Secret123!',
+        ])->assertOk()->assertJsonStructure(['access_token']);
+    }
+
     public function test_register_creates_unverified_patient_and_sends_otp(): void
     {
         $response = $this->postJson('/api/v1/auth/register', $this->registerPayload());

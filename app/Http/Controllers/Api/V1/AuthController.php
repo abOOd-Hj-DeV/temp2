@@ -48,6 +48,23 @@ class AuthController extends Controller
         return response()->json($this->auth->login($request->validated()));
     }
 
+    public function verifyLoginOtp(OTPRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->auth->verifyLoginOtp(
+                $request->input('whatsapp_number'),
+                $request->input('otp')
+            )
+        );
+    }
+
+    public function resendLoginOtp(ResendOTPRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->auth->resendLoginOtp($request->input('whatsapp_number'))
+        );
+    }
+
     public function forgotPassword(ForgotPasswordRequest $request): JsonResponse
     {
         return response()->json(

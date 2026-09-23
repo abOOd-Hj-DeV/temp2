@@ -149,7 +149,7 @@ class TherapistClientService
         });
     }
 
-    private function requireClient(Therapist $therapist, string $patientId): Patient
+    public function requireClient(Therapist $therapist, string $patientId): Patient
     {
         $patient = $this->clientsQuery($therapist)->whereKey($patientId)->first();
 

@@ -17,6 +17,10 @@ Route::prefix('auth')->name('auth.')->group(function () {
 
     Route::post('/login', [AuthController::class, 'login'])
         ->middleware('throttle:10,1')->name('login');
+    Route::post('/login/2fa', [AuthController::class, 'verifyLoginOtp'])
+        ->middleware('throttle:10,1')->name('login.2fa');
+    Route::post('/login/2fa/resend', [AuthController::class, 'resendLoginOtp'])
+        ->middleware('throttle:3,1')->name('login.2fa.resend');
 
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])
         ->middleware('throttle:3,1')->name('password.forgot');

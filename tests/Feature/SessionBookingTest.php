@@ -274,7 +274,13 @@ class SessionBookingTest extends TestCase
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
         $id = $this->book()->assertCreated()->json('session.id');
 
+        // Patient cancellation is a request until the therapist approves it.
         $this->postJson("/api/v1/sessions/{$id}/cancel")
+            ->assertStatus(202)
+            ->assertJsonPath('session.status', 'pending');
+
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/cancel/decide", ['approve' => true])
             ->assertOk()
             ->assertJsonPath('session.status', 'cancelled');
 
@@ -283,6 +289,7 @@ class SessionBookingTest extends TestCase
         ]);
 
         // Freed slot: same slot is bookable again after cancel.
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
         $this->book()->assertCreated();
     }
 

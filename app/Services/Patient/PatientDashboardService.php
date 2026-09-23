@@ -2,13 +2,20 @@
 
 namespace App\Services\Patient;
 
+use App\Enums\RedFlagPriority;
+use App\Enums\RedFlagType;
 use App\Enums\SessionStatus;
+use App\Models\Module;
 use App\Models\Patient;
+use App\Models\PatientModule;
 use App\Models\Program;
+use App\Models\SafetyPlan;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
+use App\Services\RedFlagService;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -21,6 +28,7 @@ class PatientDashboardService
     public function __construct(
         private PatientRepositoryInterface $patients,
         private AssessmentRepositoryInterface $assessments,
+        private RedFlagService $redFlags,
     ) {}
 
     public function dashboard(User $user): array
@@ -133,6 +141,104 @@ class PatientDashboardService
                     'modules_count' => $p->modules->count(),
                 ])
                 ->all(),
+        ];
+    }
+
+    public function moduleDetail(User $user, string $moduleId): array
+    {
+        $patient = $this->requireProfile($user);
+
+        $module = Module::with('program:id,name,is_core')->find($moduleId);
+        if (! $module) {
+            throw new NotFoundHttpException('Module not found.');
+        }
+
+        $progress = PatientModule::where('patient_id', $patient->user_id)
+            ->where('module_id', $module->id)
+            ->first();
+
+        return [
+            'module' => $this->moduleToArray($module, $progress),
+        ];
+    }
+
+    public function completeModule(User $user, string $moduleId): array
+    {
+        $patient = $this->requireProfile($user);
+
+        $module = Module::find($moduleId);
+        if (! $module) {
+            throw new NotFoundHttpException('Module not found.');
+        }
+
+        $progress = PatientModule::firstOrCreate(
+            ['patient_id' => $patient->user_id, 'module_id' => $module->id],
+            ['id' => (string) Str::uuid(), 'status' => 'pending'],
+        );
+        $progress->markAsCompleted();
+
+        return [
+            'module' => $this->moduleToArray($module, $progress->refresh()),
+        ];
+    }
+
+    private function moduleToArray(Module $module, ?PatientModule $progress): array
+    {
+        return [
+            'id' => $module->id,
+            'program_id' => $module->program_id,
+            'program_name' => $module->program?->name,
+            'title' => $module->title,
+            'description' => $module->description,
+            'content_type' => $module->content_type,
+            'exercise' => $module->exercise,
+            'tracking_tools' => $module->tracking_tools,
+            'order' => $module->order,
+            'status' => $progress?->status ?? 'pending',
+            'completed_at' => $progress?->completed_at?->toIso8601String(),
+        ];
+    }
+
+    public function emergency(User $user): array
+    {
+        $patient = $this->requireProfile($user);
+
+        $plan = SafetyPlan::where('patient_id', $patient->user_id)->first();
+
+        return [
+            'hotline' => config('sakina.emergency.hotline'),
+            'whatsapp' => config('sakina.emergency.whatsapp'),
+            'local_services_note' => __('In an immediate emergency, please contact local emergency services.'),
+            'safety_plan' => $plan ? [
+                'contact_info' => $plan->contact_info,
+                'emergency_contacts' => $plan->emergency_contacts,
+                'coping_strategies' => $plan->coping_strategies,
+                'warning_signs' => $plan->warning_signs,
+            ] : null,
+        ];
+    }
+
+    /**
+     * The emergency screen's "talk to a clinical supervisor now" action:
+     * raises (or bumps) a HIGH safety flag so staff are paged immediately.
+     */
+    public function emergencyAlert(User $user): array
+    {
+        $patient = $this->requireProfile($user);
+
+        $flag = $this->redFlags->createFromMood(
+            $patient,
+            RedFlagType::SAFETY,
+            RedFlagPriority::HIGH,
+            'Patient requested immediate contact with a clinical supervisor from the emergency screen.',
+        );
+
+        return [
+            'red_flag' => [
+                'id' => $flag->id,
+                'priority' => $flag->priority?->value ?? $flag->priority,
+                'status' => $flag->status,
+            ],
         ];
     }
 

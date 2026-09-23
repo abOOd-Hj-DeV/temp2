@@ -1,6 +1,8 @@
 <?php
 
 use App\Enums\UserRole;
+use App\Http\Controllers\Api\V1\ParallelLayerController;
+use App\Http\Controllers\Api\V1\TherapistContentController;
 use App\Http\Controllers\Api\V1\TherapistController;
 use App\Http\Controllers\Api\V1\TherapistSwitchController;
 use Illuminate\Support\Facades\Route;
@@ -29,6 +31,16 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
             Route::get('/clients/{id}', [TherapistController::class, 'client'])->whereUuid('id');
             Route::get('/clients/{id}/notes', [TherapistController::class, 'clientNotes'])->whereUuid('id');
             Route::post('/clients/{id}/notes', [TherapistController::class, 'addClientNote'])->whereUuid('id');
+
+            Route::get('/content', [TherapistContentController::class, 'index']);
+            Route::post('/content', [TherapistContentController::class, 'store'])->middleware('idempotent');
+            Route::get('/content/{id}', [TherapistContentController::class, 'show'])->whereUuid('id');
+            Route::put('/content/{id}', [TherapistContentController::class, 'update'])->whereUuid('id');
+            Route::delete('/content/{id}', [TherapistContentController::class, 'destroy'])->whereUuid('id');
+
+            Route::get('/clients/{id}/parallel', [ParallelLayerController::class, 'show'])->whereUuid('id');
+            Route::post('/clients/{id}/parallel', [ParallelLayerController::class, 'store'])
+                ->whereUuid('id')->middleware('idempotent');
 
             Route::get('/wallet', [TherapistController::class, 'wallet']);
             Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware(['throttle:5,1', 'idempotent']);

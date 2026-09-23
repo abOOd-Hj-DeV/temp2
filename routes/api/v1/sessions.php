@@ -35,5 +35,6 @@ Route::middleware(['auth:api', 'status'])->prefix('sessions')->group(function ()
         Route::post('/{session}/report', [SessionController::class, 'report'])->whereUuid('session');
         Route::post('/{session}/link', [SessionController::class, 'setLink'])->whereUuid('session');
         Route::post('/{session}/reschedule/decide', [SessionController::class, 'decideReschedule'])->whereUuid('session');
+        Route::post('/{session}/cancel/decide', [SessionController::class, 'decideCancellation'])->whereUuid('session');
     });
 });

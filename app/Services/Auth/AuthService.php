@@ -210,9 +210,71 @@ class AuthService
             throw $e;
         }
 
-        // The user row is locked while the token is minted so a concurrent
-        // anonymisation/deactivation either runs first (login is refused) or
-        // after (its revokeAllTokens() sees and deletes this token).
+        // Staff roles must pass a second factor (WhatsApp OTP) before a token
+        // is minted. Patient and therapist logins stay one-factor.
+        if ($this->requires2fa($user)) {
+            $this->sendOtpQuietly($user, OtpService::PURPOSE_LOGIN_2FA);
+
+            return [
+                'requires_2fa' => true,
+                'message' => __('A verification code was sent to your WhatsApp number.'),
+            ];
+        }
+
+        $tokens = $this->completeLogin($user);
+        $user = $user->refresh();
+
+        return array_merge(['message' => __('Login successful.'), 'user' => $user], $tokens);
+    }
+
+    /**
+     * Second factor of the staff login: verifies the OTP sent by login() and
+     * only then mints tokens.
+     */
+    public function verifyLoginOtp(string $whatsappNumber, string $code): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
+
+        if (! $user || ! $this->requires2fa($user)
+            || ! $this->otp->verify($user, $code, OtpService::PURPOSE_LOGIN_2FA)) {
+            throw ValidationException::withMessages([
+                'otp' => __('Invalid or expired verification code.'),
+            ]);
+        }
+
+        $this->assertLoginable($user);
+
+        $tokens = $this->completeLogin($user);
+        $user = $user->refresh();
+
+        return array_merge(['message' => __('Login successful.'), 'user' => $user], $tokens);
+    }
+
+    /** Re-send the staff login OTP; same generic response either way. */
+    public function resendLoginOtp(string $whatsappNumber): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
+
+        if ($user && $this->requires2fa($user)) {
+            $this->sendOtpQuietly($user, OtpService::PURPOSE_LOGIN_2FA);
+        }
+
+        return ['message' => __('If a staff sign-in is pending, a new code has been sent.')];
+    }
+
+    private function requires2fa(User $user): bool
+    {
+        return ! in_array($user->role, [UserRole::PATIENT, UserRole::THERAPIST], true);
+    }
+
+    /**
+     * Mint tokens for an authenticated user. The user row is locked while the
+     * token is minted so a concurrent anonymisation/deactivation either runs
+     * first (login is refused) or after (its revokeAllTokens() sees and
+     * deletes this token).
+     */
+    private function completeLogin(User $user): array
+    {
         [$user, $tokens] = DB::transaction(function () use ($user): array {
             $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
             $this->assertLoginable($user);
@@ -231,10 +293,10 @@ class AuthService
             return [$user->refresh(), $this->issueToken($user)];
         });
 
-        Cache::forget($this->lockoutKey($data['whatsapp_number']));
-        Cache::forget($this->attemptsKey($data['whatsapp_number']));
+        Cache::forget($this->lockoutKey($user->whatsapp_number));
+        Cache::forget($this->attemptsKey($user->whatsapp_number));
 
-        return array_merge(['message' => __('Login successful.'), 'user' => $user], $tokens);
+        return $tokens;
     }
 
     private function assertLoginable(User $user): void
