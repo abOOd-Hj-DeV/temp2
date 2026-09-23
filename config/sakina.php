@@ -62,6 +62,12 @@ return [
     // active clinical staff member is alerted.
     'red_flag_escalation_minutes' => (int) env('SAKINA_RED_FLAG_ESCALATION_MINUTES', 60),
 
+    // Shown on the patient emergency screen (نحن هنا من أجلك).
+    'emergency' => [
+        'hotline' => env('SAKINA_EMERGENCY_HOTLINE', '920-033-360'),
+        'whatsapp' => env('SAKINA_EMERGENCY_WHATSAPP', ''),
+    ],
+
     // An open red flag untouched for this long is superseded by a fresh one
     // (linked to it) instead of being merged into.
     'red_flag_stale_days' => (int) env('SAKINA_RED_FLAG_STALE_DAYS', 30),

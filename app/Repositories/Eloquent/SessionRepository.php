@@ -122,22 +122,28 @@ class SessionRepository implements SessionRepositoryInterface
 
     public function hasUsedInitialSession(string $patientId): bool
     {
+        // A cancelled session normally frees the free trial again — except a
+        // cancellation the therapist rejected (cancel_rejected), which the
+        // patient forfeits ("حسمت عليك وضاعت").
         return TherapySession::where('patient_id', $patientId)
-            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->where(fn ($q) => $q->where('status', '!=', SessionStatus::CANCELLED->value)
+                ->orWhere('cancel_rejected', true))
             ->exists();
     }
 
     public function countNonCancelledForSubscription(string $subscriptionId): int
     {
         return TherapySession::where('subscription_id', $subscriptionId)
-            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->where(fn ($q) => $q->where('status', '!=', SessionStatus::CANCELLED->value)
+                ->orWhere('cancel_rejected', true))
             ->count();
     }
 
     public function countNonCancelledForSubscriptionBetween(string $subscriptionId, Carbon $from, Carbon $to, ?string $excludeSessionId = null): int
     {
         return TherapySession::where('subscription_id', $subscriptionId)
-            ->where('status', '!=', SessionStatus::CANCELLED->value)
+            ->where(fn ($q) => $q->where('status', '!=', SessionStatus::CANCELLED->value)
+                ->orWhere('cancel_rejected', true))
             ->when($excludeSessionId, fn ($q) => $q->whereKeyNot($excludeSessionId))
             ->whereDate('session_date', '>=', $from->copy()->utc()->toDateString())
             ->whereDate('session_date', '<=', $to->copy()->utc()->toDateString())

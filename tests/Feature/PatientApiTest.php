@@ -2,10 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Models\Module;
 use App\Models\Patient;
+use App\Models\PatientModule;
+use App\Models\Program;
+use App\Models\SafetyPlan;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -218,5 +223,78 @@ class PatientApiTest extends TestCase
         $this->user->update(['is_active' => false]);
 
         $this->getJson('/api/v1/patients/profile')->assertForbidden();
+    }
+
+    public function test_module_detail_and_completion(): void
+    {
+        $this->createProfile();
+
+        $program = Program::create([
+            'id' => (string) Str::uuid(),
+            'name' => 'Core', 'description' => 'd', 'is_core' => true,
+        ]);
+        $module = Module::create([
+            'id' => (string) Str::uuid(),
+            'program_id' => $program->id, 'title' => 'Breathing', 'description' => 'd',
+            'content_type' => 'video', 'order' => 1,
+        ]);
+
+        $this->getJson("/api/v1/patients/modules/{$module->id}")
+            ->assertOk()
+            ->assertJsonPath('module.id', $module->id)
+            ->assertJsonPath('module.program_name', 'Core')
+            ->assertJsonPath('module.status', 'pending')
+            ->assertJsonPath('module.completed_at', null);
+
+        $this->postJson("/api/v1/patients/modules/{$module->id}/complete")
+            ->assertOk()
+            ->assertJsonPath('module.status', 'completed');
+
+        $this->assertDatabaseHas('patient_modules', [
+            'patient_id' => $this->user->id,
+            'module_id' => $module->id,
+            'status' => 'completed',
+        ]);
+
+        // Completing again is idempotent-ish (stays completed, no duplicate row).
+        $this->postJson("/api/v1/patients/modules/{$module->id}/complete")->assertOk();
+        $this->assertSame(1, PatientModule::count());
+
+        $this->getJson('/api/v1/patients/modules/'.(string) Str::uuid())
+            ->assertNotFound();
+        $this->postJson('/api/v1/patients/modules/'.(string) Str::uuid().'/complete')
+            ->assertNotFound();
+    }
+
+    public function test_emergency_screen_and_alert(): void
+    {
+        $this->createProfile();
+
+        $this->getJson('/api/v1/patients/emergency')
+            ->assertOk()
+            ->assertJsonPath('hotline', '920-033-360')
+            ->assertJsonStructure(['hotline', 'whatsapp', 'local_services_note', 'safety_plan']);
+
+        SafetyPlan::create([
+            'id' => (string) Str::uuid(),
+            'patient_id' => $this->user->id,
+            'contact_info' => ['mother' => '0555'],
+            'coping_strategies' => 'breathing',
+        ]);
+        $this->getJson('/api/v1/patients/emergency')
+            ->assertOk()
+            ->assertJsonPath('safety_plan.contact_info.mother', '0555')
+            ->assertJsonPath('safety_plan.coping_strategies', 'breathing');
+
+        // The "talk to a supervisor now" button raises a HIGH safety flag.
+        $this->postJson('/api/v1/patients/emergency/alert')
+            ->assertCreated()
+            ->assertJsonPath('red_flag.priority', 'high');
+        $this->assertDatabaseHas('red_flags', [
+            'patient_id' => $this->user->id,
+            'type' => 'safety',
+            'priority' => 'high',
+            'status' => 'open',
+        ]);
     }
 }

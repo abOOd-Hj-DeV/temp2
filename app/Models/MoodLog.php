@@ -17,11 +17,16 @@ class MoodLog extends Model
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'patient_id', 'score', 'notes', 'log_date', 'alert_sent',
+        'id', 'patient_id', 'score', 'anxiety', 'energy', 'sleep_hours',
+        'activity_level', 'notes', 'log_date', 'alert_sent',
     ];
 
     protected $casts = [
         'score' => 'integer',
+        'anxiety' => 'integer',
+        'energy' => 'integer',
+        'sleep_hours' => 'float',
+        'activity_level' => 'integer',
         'log_date' => 'date',
         'alert_sent' => 'boolean',
     ];

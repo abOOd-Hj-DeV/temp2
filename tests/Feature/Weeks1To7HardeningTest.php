@@ -288,6 +288,40 @@ class Weeks1To7HardeningTest extends TestCase
         $this->assertSame($streak, $chart['summary']['current_low_streak']);
     }
 
+    public function test_mood_log_accepts_anxiety_energy_sleep_and_activity_axes(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+
+        $this->postJson('/api/v1/mood', [
+            'score' => 6, 'anxiety' => 4, 'energy' => 5,
+            'sleep_hours' => 7.5, 'activity_level' => 3,
+        ])->assertCreated()
+            ->assertJsonPath('mood.anxiety', 4)
+            ->assertJsonPath('mood.energy', 5)
+            ->assertJsonPath('mood.sleep_hours', 7.5)
+            ->assertJsonPath('mood.activity_level', 3);
+
+        $this->assertDatabaseHas('mood_logs', [
+            'patient_id' => $this->patient->user_id,
+            'anxiety' => 4, 'energy' => 5, 'activity_level' => 3,
+        ]);
+
+        // Out-of-range axes rejected; score-only still accepted (backward compat).
+        $this->postJson('/api/v1/mood', ['score' => 6, 'anxiety' => 11])->assertStatus(422);
+        $this->postJson('/api/v1/mood', ['score' => 6, 'sleep_hours' => 30])->assertStatus(422);
+        $this->postJson('/api/v1/mood', ['score' => 8])->assertOk();
+        $this->postJson('/api/v1/mood', [
+            'score' => 5, 'anxiety' => 6, 'sleep_hours' => 6.5,
+            'log_date' => now()->subDay()->toDateString(),
+        ])->assertCreated();
+
+        $chart = $this->getJson('/api/v1/patients/mood/chart?days=7')->assertOk()->json();
+        $yesterday = $chart['series'][count($chart['series']) - 2];
+        $this->assertSame(6, $yesterday['anxiety']);
+        $this->assertSame(6.5, $yesterday['sleep_hours']);
+        $this->assertSame(6.5, $chart['summary']['average_sleep_hours']);
+    }
+
     public function test_low_mood_streak_requires_consecutive_calendar_days_and_strict_integers(): void
     {
         Sanctum::actingAs($this->patientUser, ['*'], 'api');

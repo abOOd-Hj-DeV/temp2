@@ -103,7 +103,10 @@ class PackagePolicyTest extends TestCase
             ->assertJsonPath('session.payment_status', 'free')
             ->json('session.id');
 
-        $this->postJson("/api/v1/sessions/{$id}/cancel")->assertOk();
+        $this->postJson("/api/v1/sessions/{$id}/cancel")->assertStatus(202);
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/cancel/decide", ['approve' => true])->assertOk();
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
 
         $this->book('11:00', 3)->assertCreated()
             ->assertJsonPath('session.is_initial', true)
@@ -111,6 +114,35 @@ class PackagePolicyTest extends TestCase
 
         // Once a trial is actually kept, the next booking is no longer free.
         $this->book('12:00', 3)->assertCreated()
+            ->assertJsonPath('session.is_initial', false)
+            ->assertJsonPath('session.payment_status', 'pending');
+    }
+
+    public function test_therapist_rejected_cancellation_forfeits_the_free_initial_session(): void
+    {
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+
+        $id = $this->book('10:00', 3)->assertCreated()
+            ->assertJsonPath('session.is_initial', true)
+            ->assertJsonPath('session.payment_status', 'free')
+            ->json('session.id');
+
+        // Patient can only *request* the cancel; the session stays booked.
+        $this->postJson("/api/v1/sessions/{$id}/cancel")
+            ->assertStatus(202)
+            ->assertJsonPath('session.status', 'pending')
+            ->assertJsonPath('session.cancellation.pending', true);
+
+        // Therapist rejects → session cancelled anyway but forfeited (consumed).
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->postJson("/api/v1/sessions/{$id}/cancel/decide", ['approve' => false])
+            ->assertOk()
+            ->assertJsonPath('session.status', 'cancelled')
+            ->assertJsonPath('session.cancellation.forfeited', true);
+
+        // The free trial is consumed: the next booking is a normal paid one.
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->book('11:00', 3)->assertCreated()
             ->assertJsonPath('session.is_initial', false)
             ->assertJsonPath('session.payment_status', 'pending');
     }

@@ -24,6 +24,8 @@ class OtpService
 
     public const PURPOSE_PASSWORD_RESET = 'password_reset';
 
+    public const PURPOSE_LOGIN_2FA = 'login_2fa';
+
     private const CODE_LENGTH = 6;
 
     private const TTL_MINUTES = 5;

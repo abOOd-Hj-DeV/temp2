@@ -155,8 +155,11 @@ class SessionService
      */
     public function cancel(TherapySession $session, User $actor): TherapySession
     {
+        // Patient cancellations are requests, not decisions: the therapist
+        // must approve via decideCancellation(). Staff/therapist cancels stay
+        // immediate (they own the decision).
         if ($actor->role === UserRole::PATIENT) {
-            $this->assertCancellable($session);
+            return $this->requestCancellation($session, $actor);
         }
 
         return $this->transition($session, SessionStatus::CANCELLED, $actor, [
@@ -167,7 +170,80 @@ class SessionService
             'reschedule_time' => null,
             'reschedule_requested_by' => null,
             'reschedule_requested_at' => null,
+            'cancel_requested_by' => null,
+            'cancel_requested_at' => null,
         ]);
+    }
+
+    /**
+     * Patient asks to cancel a pending/confirmed session. Nothing changes
+     * until the therapist decides; the slot stays reserved meanwhile.
+     */
+    public function requestCancellation(TherapySession $session, User $actor): TherapySession
+    {
+        if ($actor->id !== $session->patient_id) {
+            throw new AuthorizationException('Only the patient of this session can request a cancellation.');
+        }
+
+        $fresh = DB::transaction(function () use ($session, $actor) {
+            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+
+            if (! in_array($locked->status, [SessionStatus::PENDING, SessionStatus::CONFIRMED], true)) {
+                throw new ConflictException(sprintf('A %s session cannot be cancelled.', $locked->status->value));
+            }
+
+            if ($locked->cancel_requested_by !== null) {
+                throw new ConflictException('A cancellation request is already awaiting the therapist.');
+            }
+
+            $this->sessions->update($locked, [
+                'cancel_requested_by' => $actor->id,
+                'cancel_requested_at' => now(),
+            ]);
+
+            return $locked->fresh(['patient.user', 'therapist.user']);
+        });
+
+        $this->notifications->deliver('sessionCancelRequested', $fresh, $fresh->therapist->user);
+
+        return $fresh;
+    }
+
+    /**
+     * Therapist answers a patient's cancellation request.
+     *  - Approve: the session is cancelled and (for the free initial session)
+     *    does not count as used — the patient may re-book.
+     *  - Reject: the session is cancelled anyway but flagged cancel_rejected,
+     *    so it counts as consumed ("حسمت عليك وضاعت") and cannot be re-booked.
+     */
+    public function decideCancellation(TherapySession $session, User $actor, bool $approve): TherapySession
+    {
+        $this->assertOwner($session, $actor);
+
+        $fresh = DB::transaction(function () use ($session, $actor, $approve) {
+            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+
+            if ($locked->cancel_requested_by === null) {
+                throw new ConflictException('There is no pending cancellation request for this session.');
+            }
+
+            return $this->transition($locked, SessionStatus::CANCELLED, $actor, [
+                SessionStatus::PENDING,
+                SessionStatus::CONFIRMED,
+            ], [
+                'reschedule_date' => null,
+                'reschedule_time' => null,
+                'reschedule_requested_by' => null,
+                'reschedule_requested_at' => null,
+                'cancel_requested_by' => null,
+                'cancel_requested_at' => null,
+                'cancel_rejected' => ! $approve,
+            ]);
+        });
+
+        $this->notifications->deliver('sessionCancelDecided', $fresh, $approve);
+
+        return $fresh;
     }
 
     /**
@@ -677,6 +753,11 @@ class SessionService
                     $viewer->timezone()
                 ),
                 'requested_at' => $session->reschedule_requested_at?->toISOString(),
+            ],
+            'cancellation' => $session->cancel_requested_by === null && ! $session->cancel_rejected ? null : [
+                'pending' => $session->cancel_requested_by !== null,
+                'requested_at' => $session->cancel_requested_at?->toISOString(),
+                'forfeited' => $session->cancel_rejected,
             ],
             'created_at' => $session->created_at?->toISOString(),
         ];
