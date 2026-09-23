@@ -1,4 +1,5 @@
 <?php
+
 // app/Repositories/Contracts/RedFlagRepositoryInterface.php
 
 namespace App\Repositories\Contracts;

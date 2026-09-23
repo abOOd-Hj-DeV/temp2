@@ -1,22 +1,38 @@
 <?php
+
 // app/Models/RedFlag.php
 
 namespace App\Models;
 
+use App\Enums\RedFlagPriority;
+use App\Enums\RedFlagType;
+use App\Traits\HasUUID;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class RedFlag extends Model
 {
-    use HasFactory;
+    use HasFactory, HasUUID;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'patient_id', 'type', 'description', 'assigned_to',
-        'status', 'action_taken', 'priority'
+        'id', 'patient_id', 'assessment_id', 'type', 'description',
+        'assigned_to', 'status', 'action_taken', 'priority', 'escalated_at', 'escalation_attempts',
+        'previous_flag_id',
+    ];
+
+    /** Set (not persisted) when a merged signal raised this flag's priority. */
+    public bool $priorityRaised = false;
+
+    protected $casts = [
+        'type' => RedFlagType::class,
+        'priority' => RedFlagPriority::class,
+        'escalated_at' => 'datetime',
+        'escalation_attempts' => 'integer',
     ];
 
     /**
@@ -28,11 +44,24 @@ class RedFlag extends Model
     }
 
     /**
+     * The stale flag this one superseded.
+     */
+    public function previousFlag(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'previous_flag_id');
+    }
+
+    /**
      * العلاقة مع المستخدم المسؤول
      */
     public function assignedUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'assigned_to');
+    }
+
+    public function assessment(): BelongsTo
+    {
+        return $this->belongsTo(Assessment::class, 'assessment_id');
     }
 
     /**

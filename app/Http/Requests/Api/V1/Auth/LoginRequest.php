@@ -1,12 +1,19 @@
 <?php
-// app/Http/Requests/Api/V1/Auth/LoginRequest.php
 
 namespace App\Http\Requests\Api\V1\Auth;
 
+use App\Support\PhoneNumber;
 use Illuminate\Foundation\Http\FormRequest;
 
 class LoginRequest extends FormRequest
 {
+    protected function prepareForValidation(): void
+    {
+        if (is_string($this->input('whatsapp_number'))) {
+            $this->merge(['whatsapp_number' => PhoneNumber::normalize($this->input('whatsapp_number')) ?? $this->input('whatsapp_number')]);
+        }
+    }
+
     public function authorize(): bool
     {
         return true;
@@ -15,18 +22,8 @@ class LoginRequest extends FormRequest
     public function rules(): array
     {
         return [
-
-            'whatsapp_number' => 'required|string|exists:users,whatsapp_number',
-            'password' => 'required|string',
-        ];
-    }
-
-    public function messages(): array
-    {
-        return [
-            'whatsapp_number.required' => 'whatsapp number required.',
-            'whatapp_number.exists' => 'whatsapp number not found.',
-            'password.required' => 'password required.',
+            'whatsapp_number' => ['required', 'string'],
+            'password' => ['required', 'string'],
         ];
     }
 }

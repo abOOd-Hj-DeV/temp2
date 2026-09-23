@@ -1,738 +1,512 @@
 <?php
-// app/Services/Auth/AuthService.php
 
 namespace App\Services\Auth;
 
-use App\Models\User;
 use App\Enums\UserRole;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Validation\ValidationException;
+use App\Models\RefreshToken;
+use App\Models\User;
 use App\Repositories\Contracts\UserRepositoryInterface;
-use Exception;
+use App\Services\Account\StaffAccountService;
+use App\Services\AuditLogService;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Laravel\Sanctum\PersonalAccessToken;
 
+/**
+ * Registration, WhatsApp-OTP verification, login, and password reset.
+ *
+ * Registration always creates a PATIENT. Staff and therapist accounts are
+ * created by management (StaffAccountService) and activated here with a
+ * one-time code — never through registration.
+ */
 class AuthService
 {
-    private const UNVERIFIED_USER_EXPIRY_HOURS = 24;
+    private const UNVERIFIED_USER_TTL_HOURS = 24;
+
+    private const TOKEN_NAME = 'api';
+
     private const MAX_LOGIN_ATTEMPTS = 5;
 
+    private const LOGIN_LOCKOUT_MINUTES = 15;
+
     public function __construct(
-        private UserRepositoryInterface $userRepository,
-        private OTPService $otpService
+        private UserRepositoryInterface $users,
+        private OtpService $otp,
+        private AuditLogService $audit,
+        private StaffAccountService $staffAccounts,
     ) {}
 
-    /**
-     * Register a new user or update inactive user
-     */
     public function register(array $data): array
     {
-        // First, clean up any expired unverified users
-        $this->cleanupExpiredUnverifiedUser($data['whatsapp_number']);
+        $data['email'] = mb_strtolower(trim($data['email']));
+        $existing = $this->users->findByWhatsapp($data['whatsapp_number']);
 
-        // Check for active user with same WhatsApp number
-        $activeUser = $this->userRepository->findActiveByWhatsapp($data['whatsapp_number']);
-        if ($activeUser) {
+        // Invited staff accounts awaiting activation are not resumable registrations.
+        if ($existing?->isVerified() || ($existing && $existing->role !== UserRole::PATIENT)) {
             throw ValidationException::withMessages([
-                'whatsapp_number' => 'This WhatsApp number is already registered and active.'
+                'whatsapp_number' => __('This WhatsApp number is already registered.'),
             ]);
         }
 
-        return DB::transaction(function () use ($data) {
-            // Find any user with this WhatsApp number (regardless of status)
-            $existingUser = $this->userRepository->findByWhatsapp($data['whatsapp_number']);
+        $created = false;
 
-            if ($existingUser) {
-                // Check if this user is unverified (not active and not phone verified)
-                if (!$existingUser->phone_verified_at && !$existingUser->is_active) {
-                    // Update existing unverified user
-                    return $this->updateExistingUser($existingUser, $data);
-                } else {
-                    // User exists but is in a state we don't expect
-                    // This shouldn't happen if cleanup worked correctly
-                    throw ValidationException::withMessages([
-                        'whatsapp_number' => 'Account status is inconsistent. Please contact support.'
-                    ]);
-                }
+        $user = DB::transaction(function () use ($existing, $data, &$created) {
+            if ($existing && $this->isUnverifiedExpired($existing)) {
+                $this->users->delete($existing);
+                $existing = null;
             }
 
-            // No existing user found - create new one
-            return $this->createNewUser($data);
-        });
-    }
+            if ($existing) {
+                $this->assertEmailAvailable($data['email'], $existing);
 
-    /**
-     * Verify OTP and activate account
-     */
-    public function verifyOTP(string $whatsappNumber, string $otp): array
-{
-    $user = $this->userRepository->findByWhatsapp($whatsappNumber);
-
-    if (!$user) {
-        throw ValidationException::withMessages([
-            'whatsapp_number' => 'WhatsApp number is not registered.'
-        ]);
-    }
-
-    if ($this->otpService->verifyOTP($user, $otp)) {
-        return DB::transaction(function () use ($user) {
-            try {
-                // ⭐⭐⭐⭐ الإصلاح هنا: تأكد من تعيين كلا الحقلين ⭐⭐⭐⭐
-                $updateData = [
-                    'phone_verified_at' => now(), // ⬅️ هذا الأهم
-                    'is_active' => true,
-                    'login_attempts' => 0,
-                ];
-
-                $updateSuccess = $this->userRepository->update($user, $updateData);
-
-                if (!$updateSuccess) {
-                    throw new \Exception('Failed to update user activation status.');
-                }
-
-                // تأكد من تحديث الكائن المحلي
-                $user->refresh();
-
-                // تسجيل عملية التفعيل
-                \Log::info('User OTP verified and account activated', [
-                    'user_id' => $user->id,
-                    'whatsapp' => $user->whatsapp_number,
-                    'phone_verified_at' => $user->phone_verified_at,
-                    'is_active' => $user->is_active,
-                ]);
-
-                // إصدار التوكن
-                $tokenResult = $user->createToken('Personal Access Token');
-
-                return [
-                    'message' => 'Account activated successfully.',
-                    'user' => $user,
-                    'token' => $tokenResult->accessToken,
-                    'token_type' => 'Bearer',
-                    'expires_at' => $tokenResult->token->expires_at->toDateTimeString(),
-                ];
-
-            } catch (\Exception $e) {
-                \Log::error('OTP verification failed', [
-                    'user_id' => $user->id,
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString()
-                ]);
-
-                throw ValidationException::withMessages([
-                    'database' => 'Failed to activate account. Please try again.'
-                ]);
-            }
-        });
-    }
-
-    throw ValidationException::withMessages([
-        'otp' => 'Invalid or expired verification code.'
-    ]);
-}
-
-    /**
-     * User login with WhatsApp number and password
-     */
-    public function login(array $credentials): array
-    {
-        $user = $this->userRepository->findActiveByWhatsapp($credentials['whatsapp_number']);
-        $this->validateLoginCredentials($user, $credentials['password']);
-        $this->validateUserVerification($user);
-        $this->validateUserActivation($user);
-        $this->validateLoginAttempts($user);
-
-        // Reset login attempts on successful login
-        $this->resetLoginAttempts($user);
-
-        // Update last login timestamp
-        $this->userRepository->updateLastLogin($user);
-
-        // Create new authentication token
-        $token = $this->createAuthToken($user);
-
-        return [
-            'user' => $user,
-            'token' => $token->accessToken,
-            'token_type' => 'Bearer',
-            'expires_at' => $token->token->expires_at->toDateTimeString(),
-        ];
-    }
-
-    /**
-     * Resend OTP for unverified users
-     */
-    public function resendOTP(string $whatsappNumber): array
-    {
-        $user = $this->userRepository->findByWhatsapp($whatsappNumber);
-
-        if (!$user) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => 'WhatsApp number is not registered.'
-            ]);
-        }
-
-        // Check if account is already activated
-        if ($user->phone_verified_at && $user->is_active) {
-            throw ValidationException::withMessages([
-                'message' => 'Account is already activated.'
-            ]);
-        }
-
-        // Check if verification period has expired
-        if ($this->isUnverifiedUserExpired($user)) {
-            $this->userRepository->delete($user);
-            throw ValidationException::withMessages([
-                'whatsapp_number' => 'Verification period has expired. Please register again.'
-            ]);
-        }
-
-        return DB::transaction(function () use ($user) {
-            // Delete old OTPs
-            $this->otpService->deleteOldOTPs($user);
-
-            // Send new OTP
-            $this->otpService->sendOTP($user);
-
-            return [
-                'message' => 'New verification code sent successfully.',
-                'user_id' => $user->id,
-                'remaining_time' => $this->getRemainingVerificationTime($user),
-            ];
-        });
-    }
-
-    /**
-     * Logout user by revoking tokens
-     */
-    public function logout(User $user): array
-    {
-        $user->token()->revoke();
-
-        return [
-            'message' => 'Logged out successfully.'
-        ];
-    }
-
-    /**
-     * Get current authenticated user with relations
-     */
-    public function getCurrentUser(User $user): User
-    {
-        return $user->load(['roles']);
-    }
-
-    /**
-     * Get user status by WhatsApp number
-     */
-    public function getUserStatus(string $whatsappNumber): array
-    {
-        // Check for active user
-        $activeUser = $this->userRepository->findActiveByWhatsapp($whatsappNumber);
-
-        if ($activeUser) {
-            return [
-                'status' => 'active',
-                'message' => 'Account is already activated',
-                'user' => $activeUser,
-                'can_login' => true,
-                'can_register' => false,
-            ];
-        }
-
-        // Check for any user with this WhatsApp number
-        $user = $this->userRepository->findByWhatsapp($whatsappNumber);
-
-        if ($user) {
-            $isExpired = $this->isUnverifiedUserExpired($user);
-
-            return [
-                'status' => $isExpired ? 'expired' : 'inactive',
-                'message' => $isExpired
-                    ? 'Unverified account has expired'
-                    : 'Unverified account exists for this number',
-                'user' => $user,
-                'created_at' => $user->created_at,
-                'expired' => $isExpired,
-                'can_update' => !$isExpired,
-                'can_register' => $isExpired,
-                'remaining_time' => !$isExpired ? $this->getRemainingVerificationTime($user) : null,
-            ];
-        }
-
-        return [
-            'status' => 'not_found',
-            'message' => 'No account found for this number',
-            'can_register' => true,
-        ];
-    }
-
-    /**
-     * Get remaining verification time for unverified user
-     */
-    public function getRemainingVerificationTime(User $user): array
-    {
-        if ($user->phone_verified_at) {
-            return [
-                'valid' => true,
-                'message' => 'Account already verified',
-                'remaining_minutes' => 0,
-            ];
-        }
-
-        $accountAge = $user->created_at->diffInMinutes(now());
-        $remainingMinutes = max(0, (self::UNVERIFIED_USER_EXPIRY_HOURS * 60) - $accountAge);
-
-        return [
-            'valid' => $remainingMinutes > 0,
-            'message' => $remainingMinutes > 0
-                ? "You have {$remainingMinutes} minutes to verify your account"
-                : 'Verification period has expired',
-            'remaining_minutes' => $remainingMinutes,
-            'expires_at' => $user->created_at->addHours(self::UNVERIFIED_USER_EXPIRY_HOURS)->toDateTimeString(),
-        ];
-    }
-
-    /**
-     * ========== PRIVATE VALIDATION METHODS ==========
-     */
-
-    private function validateLoginCredentials(?User $user, string $password): void
-    {
-        if (!$user || !Hash::check($password, $user->password)) {
-            // Increment login attempts
-            if ($user) {
-                $this->incrementLoginAttempts($user);
+                return $existing;
             }
 
-            throw ValidationException::withMessages([
-                'whatsapp_number' => 'Invalid credentials provided.'
-            ]);
-        }
-    }
+            $this->assertEmailAvailable($data['email']);
 
-    private function validateUserVerification(User $user): void
-    {
-        if (!$user->phone_verified_at) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => 'Account is pending verification. Please verify your phone number first.'
-            ]);
-        }
-    }
-
-    private function validateUserActivation(User $user): void
-    {
-        if (!$user->is_active) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => 'User account is inactive. Please contact support.'
-            ]);
-        }
-    }
-
-    private function validateLoginAttempts(User $user): void
-    {
-        $attempts = $user->login_attempts ?? 0;
-
-        if ($attempts >= self::MAX_LOGIN_ATTEMPTS) {
-            throw ValidationException::withMessages([
-                'whatsapp_number' => 'Account locked due to too many failed login attempts. Please contact support.'
-            ]);
-        }
-    }
-
-    private function finalEmailValidation(User $user): void
-    {
-        // Check if another user has been activated with this email while this user was waiting
-        $activeUserWithSameEmail = $this->userRepository->findActiveByEmail($user->email);
-
-        if ($activeUserWithSameEmail && $activeUserWithSameEmail->id !== $user->id) {
-            throw ValidationException::withMessages([
-                'email' => 'This email has been registered with another active account. Please update your email.'
-            ]);
-        }
-    }
-
-    /**
-     * ========== PRIVATE BUSINESS LOGIC METHODS ==========
-     */
-
-    private function updateExistingUser(User $user, array $data): array
-    {
-        // Validate email: allow same email for same user, block if used by different user
-        $this->validateEmailForUpdate($user, $data['email']);
-
-        // Prepare update data
-        $updateData = [
-            'name' => $data['name'],
-            'email' => $data['email'],
-            'password' => Hash::make($data['password']),
-            'updated_at' => now(),
-        ];
-
-        // Add role if provided
-        if (isset($data['role'])) {
-            $updateData['role'] = $data['role'];
-        }
-
-        // Update user data
-        $this->userRepository->update($user, $updateData);
-
-        // Update role if changed
-        if (isset($data['role']) && $user->role->value !== $data['role']) {
-            $user->syncRoles([$data['role']]);
-        }
-
-        // Clear old OTPs and send new one
-        $this->otpService->deleteOldOTPs($user);
-        $this->otpService->sendOTP($user);
-
-        Log::info('Unverified user updated and OTP resent', [
-            'user_id' => $user->id,
-            'whatsapp' => $user->whatsapp_number,
-        ]);
-
-        return [
-            'message' => 'Account data updated. New verification code sent.',
-            'user_id' => $user->id,
-            'is_new_user' => false,
-        ];
-    }
-
-    private function createNewUser(array $data): array
-    {
-        // Validate email for new user (must be globally unique)
-        $this->validateEmailForNewUser($data['email']);
-
-        $userData = [
-            'name' => $data['name'],
-            'email' => $data['email'],
-            'password' => Hash::make($data['password']),
-            'role' => $data['role'] ?? UserRole::PATIENT->value,
-            'whatsapp_number' => $data['whatsapp_number'],
-            'is_active' => false,
-            'phone_verified_at' => null,
-            'login_attempts' => 0,
-        ];
-
-        $user = $this->userRepository->create($userData);
-        $user->assignRole($user->role->value);
-
-        // Clear any old OTPs and send new one
-        $this->otpService->deleteOldOTPs($user);
-        $this->otpService->sendOTP($user);
-
-        Log::info('New user registered', [
-            'user_id' => $user->id,
-            'whatsapp' => $user->whatsapp_number,
-            'email' => $user->email,
-        ]);
-
-        return [
-            'message' => 'Account created successfully. Please enter verification code.',
-            'user_id' => $user->id,
-            'is_new_user' => true,
-            'verification_expires_in_hours' => self::UNVERIFIED_USER_EXPIRY_HOURS,
-        ];
-    }
-
-    private function validateEmailForUpdate(User $user, string $newEmail): void
-    {
-        // If email hasn't changed, allow it (same user, same email)
-        if ($user->email === $newEmail) {
-            return;
-        }
-
-        // Check if new email is used by another user
-        $existingUser = $this->userRepository->findByEmail($newEmail);
-
-        // If found AND it's a different user, throw error
-        if ($existingUser && $existingUser->id !== $user->id) {
-            throw ValidationException::withMessages([
-                'email' => 'Email is already registered with another account.'
-            ]);
-        }
-
-        // Allow: either email not found, or found but it's the same user
-        return;
-    }
-
-    private function validateEmailForNewUser(string $email): void
-    {
-        $existingUser = $this->userRepository->findByEmail($email);
-
-        if ($existingUser) {
-            throw ValidationException::withMessages([
-                'email' => 'Email is already registered with another account.'
-            ]);
-        }
-    }
-
-    private function isUnverifiedUserExpired(User $user): bool
-    {
-        // If user is already verified, not expired
-        if ($user->phone_verified_at || $user->is_active) {
-            return false;
-        }
-
-        $accountAge = $user->created_at->diffInHours(now());
-        return $accountAge >= self::UNVERIFIED_USER_EXPIRY_HOURS;
-    }
-
-    private function cleanupExpiredUnverifiedUser(string $whatsappNumber): void
-    {
-        $user = $this->userRepository->findByWhatsapp($whatsappNumber);
-
-        if ($user && $this->isUnverifiedUserExpired($user)) {
-            $this->userRepository->delete($user);
-            Log::info('Expired unverified user cleaned up', [
-                'whatsapp' => $whatsappNumber,
-                'user_id' => $user->id,
-            ]);
-        }
-    }
-
-    private function activateUser(User $user): void
-    {
-        $this->userRepository->update($user, [
-            'phone_verified_at' => now(),
-            'is_active' => true,
-            'login_attempts' => 0, // Reset login attempts on activation
-        ]);
-
-        Log::info('User account activated', [
-            'user_id' => $user->id,
-            'whatsapp' => $user->whatsapp_number,
-        ]);
-    }
-
-    private function createAuthToken(User $user)
-    {
-        return $user->createToken('Personal Access Token');
-    }
-
-    private function incrementLoginAttempts(User $user): void
-    {
-        $attempts = ($user->login_attempts ?? 0) + 1;
-        $this->userRepository->update($user, ['login_attempts' => $attempts]);
-
-        if ($attempts >= self::MAX_LOGIN_ATTEMPTS) {
-            Log::warning('Account locked due to too many failed login attempts', [
-                'user_id' => $user->id,
-                'attempts' => $attempts,
-            ]);
-        }
-    }
-
-    private function resetLoginAttempts(User $user): void
-    {
-        $this->userRepository->update($user, ['login_attempts' => 0]);
-    }
-    // أضف هذه الدوال في نهاية AuthService class
-
-/**
- * Send password reset OTP
- */
-public function forgotPassword(string $whatsappNumber): array
-{
-    $user = $this->userRepository->findByWhatsapp($whatsappNumber);
-
-    if (!$user) {
-        // For security, don't reveal if user exists
-        return [
-            'message' => 'If an account exists with this number, you will receive an OTP shortly.',
-        ];
-    }
-
-    // Check if user is verified
-    if (!$user->phone_verified_at) {
-        throw ValidationException::withMessages([
-            'account' => 'Account is not verified. Please verify your account first.'
-        ]);
-    }
-
-    // Send OTP for password reset
-    $this->otpService->deleteOldOTPs($user);
-    $this->otpService->sendOTP($user);
-
-    Log::info('Password reset OTP sent', [
-        'user_id' => $user->id,
-        'whatsapp' => $whatsappNumber,
-    ]);
-
-    return [
-        'message' => 'Password reset OTP sent successfully.',
-        'user_id' => $user->id,
-    ];
-}
-
-/**
- * Reset password with OTP
- */
-public function resetPassword(string $whatsappNumber, string $otp, string $newPassword): array
-{
-    $user = $this->userRepository->findByWhatsapp($whatsappNumber);
-
-    if (!$user) {
-        throw ValidationException::withMessages([
-            'whatsapp_number' => 'WhatsApp number is not registered.'
-        ]);
-    }
-
-    if ($this->otpService->verifyOTP($user, $otp)) {
-        return DB::transaction(function () use ($user, $newPassword) {
-            // Update password
-            $this->userRepository->update($user, [
-                'password' => Hash::make($newPassword),
+            $user = $this->users->create([
+                'name' => $data['name'],
+                'email' => $data['email'],
+                'password' => Hash::make($data['password']),
+                'role' => UserRole::PATIENT->value,
+                'whatsapp_number' => $data['whatsapp_number'],
+                'timezone' => $data['timezone'] ?? config('app.timezone', 'UTC'),
+                'is_active' => false,
+                'phone_verified_at' => null,
                 'login_attempts' => 0,
             ]);
 
-            // Delete OTP after use
-            $this->otpService->deleteOldOTPs($user);
+            $user->assignRole(UserRole::PATIENT->value);
+            $created = true;
 
-            Log::info('Password reset successfully', [
-                'user_id' => $user->id,
-                'whatsapp' => $user->whatsapp_number,
+            return $user;
+        });
+
+        try {
+            $this->otp->send($user, OtpService::PURPOSE_REGISTRATION);
+        } catch (\Throwable $e) {
+            // No code could be delivered: do not leave a half-registered row
+            // holding the number/email hostage until the unverified TTL expires.
+            if ($created) {
+                $this->users->delete($user);
+            }
+
+            throw $e;
+        }
+
+        // A pending account only takes on the new details once a code was
+        // actually delivered; a throttled or failed send leaves it untouched.
+        if (! $created) {
+            $user = DB::transaction(function () use ($user, $data) {
+                $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+
+                if ($user->isVerified()) {
+                    throw ValidationException::withMessages([
+                        'whatsapp_number' => __('This WhatsApp number is already registered.'),
+                    ]);
+                }
+
+                $this->assertEmailAvailable($data['email'], $user);
+                $this->users->update($user, [
+                    'name' => $data['name'],
+                    'email' => $data['email'],
+                    'password' => Hash::make($data['password']),
+                ]);
+
+                return $user->refresh();
+            });
+        }
+
+        return [
+            'message' => __('Account created. Enter the verification code sent to your WhatsApp.'),
+            'user_id' => $user->id,
+        ];
+    }
+
+    public function verifyOtp(string $whatsappNumber, string $code): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
+
+        // One indistinguishable failure for unknown, already-verified and wrong-code
+        // cases so the endpoint cannot be used to enumerate accounts.
+        if (! $user || $user->isVerified() || $user->role !== UserRole::PATIENT || ! $this->otp->verify($user, $code, OtpService::PURPOSE_REGISTRATION)) {
+            throw ValidationException::withMessages([
+                'otp' => __('Invalid or expired verification code.'),
+            ]);
+        }
+
+        $this->users->update($user, [
+            'phone_verified_at' => now(),
+            'is_active' => true,
+            'login_attempts' => 0,
+        ]);
+
+        Log::info('User account activated', ['user_id' => $user->id]);
+
+        return array_merge(
+            ['message' => __('Account verified successfully.'), 'user' => $user->refresh()],
+            $this->issueToken($user)
+        );
+    }
+
+    /** Redeem a management-issued activation code and sign the new staff member in. */
+    public function activate(string $whatsappNumber, string $code, string $password): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
+
+        // One indistinguishable failure for unknown numbers, active accounts and bad codes.
+        if (! $user || ! $this->staffAccounts->activate($user, $code, $password)) {
+            throw ValidationException::withMessages([
+                'code' => __('Invalid or expired activation code.'),
+            ]);
+        }
+
+        $user = $user->refresh();
+        Log::info('Staff account activated', ['user_id' => $user->id]);
+
+        return array_merge(
+            ['message' => __('Account activated successfully.'), 'user' => $user],
+            $this->issueToken($user)
+        );
+    }
+
+    public function resendOtp(string $whatsappNumber): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
+
+        if ($user && ! $user->isVerified() && $user->role === UserRole::PATIENT) {
+            if ($this->isUnverifiedExpired($user)) {
+                $this->users->delete($user);
+            } else {
+                $this->sendOtpQuietly($user, OtpService::PURPOSE_REGISTRATION);
+            }
+        }
+
+        // Same response whether the number is unknown, verified, expired or on cooldown.
+        return ['message' => __('If this number is pending verification, a new code has been sent.')];
+    }
+
+    public function login(array $data): array
+    {
+        $user = $this->users->findByWhatsapp($data['whatsapp_number']);
+
+        $this->assertNotLockedOut($data['whatsapp_number']);
+
+        if (! $user || ! Hash::check($data['password'], $user->password)) {
+            $this->recordFailedLogin($user, $data['whatsapp_number']);
+            throw ValidationException::withMessages([
+                'whatsapp_number' => __('Invalid credentials.'),
+            ]);
+        }
+
+        try {
+            $this->assertLoginable($user);
+        } catch (ValidationException $e) {
+            $this->recordFailedLogin($user, $data['whatsapp_number']);
+            throw $e;
+        }
+
+        // The user row is locked while the token is minted so a concurrent
+        // anonymisation/deactivation either runs first (login is refused) or
+        // after (its revokeAllTokens() sees and deletes this token).
+        [$user, $tokens] = DB::transaction(function () use ($user): array {
+            $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            $this->assertLoginable($user);
+
+            $update = ['login_attempts' => 0, 'last_login' => now()];
+
+            // Logging back in during the grace period cancels scheduled deletion.
+            if ($user->deletion_scheduled_at !== null) {
+                $update['deletion_scheduled_at'] = null;
+                $this->audit->record($user, AuditLogService::ACCOUNT_DELETION_CANCELLED, $user->id);
+            }
+
+            $this->users->update($user, $update);
+            $this->audit->record($user, AuditLogService::LOGIN_SUCCEEDED, $user->id);
+
+            return [$user->refresh(), $this->issueToken($user)];
+        });
+
+        Cache::forget($this->lockoutKey($data['whatsapp_number']));
+        Cache::forget($this->attemptsKey($data['whatsapp_number']));
+
+        return array_merge(['message' => __('Login successful.'), 'user' => $user], $tokens);
+    }
+
+    private function assertLoginable(User $user): void
+    {
+        if (! $user->isVerified() || ! $user->is_active || $user->anonymized_at !== null) {
+            throw ValidationException::withMessages([
+                'whatsapp_number' => __('Account is not verified. Please verify your WhatsApp number first.'),
+            ]);
+        }
+    }
+
+    public function logout(User $user): array
+    {
+        $token = $user->currentAccessToken();
+
+        if ($token instanceof PersonalAccessToken) {
+            RefreshToken::where('access_token_id', $token->getKey())
+                ->whereNull('revoked_at')
+                ->update(['revoked_at' => now()]);
+            $token->delete();
+        }
+
+        return ['message' => __('Logged out successfully.')];
+    }
+
+    public function logoutAll(User $user): array
+    {
+        $user->revokeAllTokens();
+        $this->audit->record($user, AuditLogService::LOGOUT_ALL, $user->id);
+
+        return ['message' => __('Logged out from all devices.')];
+    }
+
+    /**
+     * Rotate a refresh token: the presented token is single-use; a replay of
+     * an already-used or revoked token means it leaked, so the whole session
+     * family (every access + refresh token of the user) is revoked.
+     */
+    public function refresh(string $plainRefreshToken): array
+    {
+        $hash = hash('sha256', $plainRefreshToken);
+
+        $stored = RefreshToken::where('token_hash', $hash)->first();
+
+        if (! $stored) {
+            $this->invalidRefresh();
+        }
+
+        $user = $stored->user;
+
+        if ($stored->revoked_at !== null) {
+            $this->invalidRefresh();
+        }
+
+        if ($stored->used_at !== null) {
+            Log::warning('Refresh token replay detected; revoking all sessions', [
+                'user_id' => $stored->user_id,
+                'family_id' => $stored->family_id,
             ]);
 
-            return [
-                'message' => 'Password reset successfully. You can now login with your new password.',
-                'user' => $user,
-            ];
+            if ($user) {
+                $user->revokeAllTokens();
+                $this->audit->record($user, AuditLogService::REFRESH_TOKEN_REPLAYED, $user->id, [
+                    'family_id' => $stored->family_id,
+                ]);
+            }
+
+            $this->invalidRefresh();
+        }
+
+        if ($stored->expires_at->isPast() || ! $user || ! $user->is_active || ! $user->phone_verified_at) {
+            $stored->update(['revoked_at' => now()]);
+            $this->invalidRefresh();
+        }
+
+        return DB::transaction(function () use ($stored, $user): array {
+            $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+
+            if (! $user->is_active || $user->anonymized_at !== null || ! $user->phone_verified_at) {
+                $this->invalidRefresh();
+            }
+
+            // Single-use: the atomic claim guarantees two concurrent refreshes with
+            // the same token cannot both succeed.
+            $claimed = RefreshToken::whereKey($stored->id)
+                ->whereNull('used_at')
+                ->whereNull('revoked_at')
+                ->update(['used_at' => now()]);
+
+            if ($claimed === 0) {
+                $this->invalidRefresh();
+            }
+
+            PersonalAccessToken::whereKey($stored->access_token_id)->delete();
+
+            return $this->issueToken($user, $stored->family_id);
         });
     }
 
-    throw ValidationException::withMessages([
-        'otp' => 'Invalid or expired verification code.'
-    ]);
-}
-
-/**
- * Update user profile
- */
-public function updateProfile(User $user, array $data): array
-{
-    $updateData = [];
-
-    if (isset($data['name'])) {
-        $updateData['name'] = $data['name'];
-    }
-
-    if (empty($updateData)) {
+    private function invalidRefresh(): never
+    {
         throw ValidationException::withMessages([
-            'data' => 'No valid data provided for update.'
+            'refresh_token' => __('Invalid or expired refresh token.'),
         ]);
     }
 
-    $this->userRepository->update($user, $updateData);
-    $user->refresh();
+    public function updateTimezone(User $user, string $timezone): array
+    {
+        $user->forceFill(['timezone' => $timezone])->save();
 
-    Log::info('User profile updated', [
-        'user_id' => $user->id,
-        'updated_fields' => array_keys($updateData),
-    ]);
-
-    return [
-        'message' => 'Profile updated successfully.',
-        'user' => $user,
-    ];
-}
-
-/**
- * Change password
- */
-public function changePassword(User $user, string $currentPassword, string $newPassword): array
-{
-    // Verify current password
-    if (!Hash::check($currentPassword, $user->password)) {
-        throw ValidationException::withMessages([
-            'current_password' => 'Current password is incorrect.'
-        ]);
+        return $this->currentUser($user);
     }
 
-    // Update to new password
-    $this->userRepository->update($user, [
-        'password' => Hash::make($newPassword),
-        'login_attempts' => 0,
-    ]);
-
-    Log::info('Password changed successfully', [
-        'user_id' => $user->id,
-    ]);
-
-    return [
-        'message' => 'Password changed successfully.',
-    ];
-}
-
-/**
- * Get user active sessions
- */
-public function getUserSessions(User $user): array
-{
-    return DB::table('oauth_access_tokens')
-        ->where('user_id', $user->id)
-        ->where('revoked', false)
-        ->orderBy('created_at', 'desc')
-        ->get()
-        ->map(function ($token) {
-            return [
-                'id' => $token->id,
-                'name' => $token->name,
-                'scopes' => json_decode($token->scopes, true),
-                'last_used' => $token->updated_at,
-                'created_at' => $token->created_at,
-                'expires_at' => $token->expires_at,
-                'is_current' => request()->bearerToken() === $token->id,
-            ];
-        })
-        ->toArray();
-}
-
-/**
- * Logout from all devices
- */
-public function logoutAll(User $user): array
-{
-    $revoked = DB::table('oauth_access_tokens')
-        ->where('user_id', $user->id)
-        ->where('revoked', false)
-        ->update(['revoked' => true]);
-
-    Log::info('User logged out from all devices', [
-        'user_id' => $user->id,
-        'revoked_tokens' => $revoked,
-    ]);
-
-    return [
-        'message' => 'Logged out from all devices successfully.',
-        'revoked_count' => $revoked,
-    ];
-}
-
-/**
- * Delete user account
- */
-public function deleteAccount(User $user, string $password): array
-{
-    // Verify password
-    if (!Hash::check($password, $user->password)) {
-        throw ValidationException::withMessages([
-            'password' => 'Password is incorrect.'
-        ]);
+    public function currentUser(User $user): array
+    {
+        return [
+            'user' => $user->loadMissing('patient'),
+            'roles' => $user->getRoleNames(),
+        ];
     }
 
-    // Revoke all tokens
-    $this->logoutAll($user);
+    public function checkStatus(string $whatsappNumber): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
 
-    // Delete user
-    $this->userRepository->delete($user);
+        // Only reveal the state a legitimate owner needs mid-onboarding:
+        // whether an OTP verification is still pending for this number.
+        return [
+            'verification_pending' => $user !== null && ! $user->isVerified(),
+        ];
+    }
 
-    Log::info('User account deleted', [
-        'user_id' => $user->id,
-    ]);
+    public function forgotPassword(string $whatsappNumber): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
 
-    return [
-        'message' => 'Account deleted successfully.',
-    ];
-}
+        // Do not reveal whether the number is registered.
+        if ($user?->isVerified()) {
+            $this->sendOtpQuietly($user, OtpService::PURPOSE_PASSWORD_RESET);
+        }
+
+        return [
+            'message' => __('If this number is registered, a reset code has been sent.'),
+        ];
+    }
+
+    public function resetPassword(string $whatsappNumber, string $code, string $newPassword): array
+    {
+        $user = $this->users->findByWhatsapp($whatsappNumber);
+
+        if (! $user || ! $this->otp->verify($user, $code, OtpService::PURPOSE_PASSWORD_RESET)) {
+            throw ValidationException::withMessages([
+                'otp' => __('Invalid or expired reset code.'),
+            ]);
+        }
+
+        $this->users->update($user, ['password' => Hash::make($newPassword)]);
+
+        // Revoke all existing tokens so the new password is required everywhere.
+        $user->revokeAllTokens();
+
+        $this->audit->record($user, AuditLogService::PASSWORD_RESET, $user->id);
+        Log::info('Password reset completed', ['user_id' => $user->id]);
+
+        return ['message' => __('Password updated successfully.')];
+    }
+
+    /**
+     * Send an OTP without surfacing cooldown/provider errors to the caller;
+     * those responses would confirm the account exists.
+     */
+    private function sendOtpQuietly(User $user, string $purpose): void
+    {
+        try {
+            $this->otp->send($user, $purpose);
+        } catch (ValidationException $e) {
+            Log::info('OTP not sent', ['user_id' => $user->id, 'purpose' => $purpose, 'reason' => $e->getMessage()]);
+        }
+    }
+
+    private function issueToken(User $user, ?string $familyId = null): array
+    {
+        $expiresAt = now()->addMinutes((int) config('sakina.access_token_ttl_minutes', 120));
+        $token = $user->createToken(self::TOKEN_NAME, ['*'], $expiresAt);
+
+        $refreshExpiresAt = now()->addDays((int) config('sakina.refresh_token_ttl_days', 15));
+        $plainRefresh = Str::random(64);
+
+        RefreshToken::create([
+            'user_id' => $user->id,
+            'family_id' => $familyId ?? (string) Str::uuid(),
+            'token_hash' => hash('sha256', $plainRefresh),
+            'access_token_id' => $token->accessToken->getKey(),
+            'expires_at' => $refreshExpiresAt,
+        ]);
+
+        return [
+            'access_token' => $token->plainTextToken,
+            'token_type' => 'Bearer',
+            'expires_at' => $expiresAt->toISOString(),
+            'refresh_token' => $plainRefresh,
+            'refresh_expires_at' => $refreshExpiresAt->toISOString(),
+        ];
+    }
+
+    private function isUnverifiedExpired(User $user): bool
+    {
+        return $user->created_at?->addHours(self::UNVERIFIED_USER_TTL_HOURS)->isPast() ?? false;
+    }
+
+    private function assertEmailAvailable(string $email, ?User $except = null): void
+    {
+        $existing = $this->users->findByEmail($email);
+
+        if ($existing && $existing->id !== $except?->id) {
+            throw ValidationException::withMessages([
+                'email' => __('This email is already registered.'),
+            ]);
+        }
+    }
+
+    private function assertNotLockedOut(string $whatsappNumber): void
+    {
+        if (Cache::has($this->lockoutKey($whatsappNumber))) {
+            throw ValidationException::withMessages([
+                'whatsapp_number' => __('Too many failed attempts. Try again in :minutes minutes.', [
+                    'minutes' => self::LOGIN_LOCKOUT_MINUTES,
+                ]),
+            ]);
+        }
+    }
+
+    /**
+     * Failed attempts are counted per normalised number whether or not it
+     * belongs to an account, so the lockout response cannot be used to tell
+     * registered numbers from unknown ones.
+     */
+    private function recordFailedLogin(?User $user, string $whatsappNumber): void
+    {
+        $key = $this->attemptsKey($whatsappNumber);
+        $ttl = now()->addMinutes(self::LOGIN_LOCKOUT_MINUTES);
+
+        Cache::add($key, 0, $ttl);
+        $attempts = (int) Cache::increment($key);
+
+        if ($user) {
+            $this->users->update($user, ['login_attempts' => $attempts]);
+        }
+
+        if ($attempts >= self::MAX_LOGIN_ATTEMPTS) {
+            Cache::put($this->lockoutKey($whatsappNumber), true, $ttl);
+            Cache::forget($key);
+
+            if ($user) {
+                $this->users->update($user, ['login_attempts' => 0]);
+                Log::warning('Account locked after failed logins', ['user_id' => $user->id]);
+            }
+        }
+    }
+
+    private function lockoutKey(string $whatsappNumber): string
+    {
+        return 'login_lock:'.$this->normalizeNumber($whatsappNumber);
+    }
+
+    private function attemptsKey(string $whatsappNumber): string
+    {
+        return 'login_attempts:'.$this->normalizeNumber($whatsappNumber);
+    }
+
+    private function normalizeNumber(string $whatsappNumber): string
+    {
+        return preg_replace('/\D+/', '', $whatsappNumber);
+    }
 }

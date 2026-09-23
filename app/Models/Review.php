@@ -1,4 +1,5 @@
 <?php
+
 // app/Models/Review.php
 
 namespace App\Models;
@@ -12,10 +13,11 @@ class Review extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected $fillable = [
-        'id', 'patient_id', 'therapist_id', 'rating', 'comment'
+        'id', 'patient_id', 'therapist_id', 'rating', 'comment',
     ];
 
     protected $casts = [

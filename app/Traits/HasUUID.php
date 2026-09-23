@@ -1,4 +1,5 @@
 <?php
+
 // app/Traits/HasUUID.php
 
 namespace App\Traits;

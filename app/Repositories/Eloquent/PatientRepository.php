@@ -1,4 +1,5 @@
 <?php
+
 // app/Repositories/Eloquent/PatientRepository.php
 
 namespace App\Repositories\Eloquent;
@@ -138,19 +139,19 @@ class PatientRepository implements PatientRepositoryInterface
     {
         $patient = $this->findByUserId($userId);
 
-        if (!$patient) {
+        if (! $patient) {
             return [];
         }
 
         return [
             'profile_completion' => $this->calculateProfileCompletion($patient),
             'days_since_joined' => $patient->created_at->diffInDays(now()),
-            'has_therapist' => !is_null($patient->therapist_id),
-            'has_subscription' => !is_null($patient->subscription_id),
-            'assessment_completed' => !is_null($patient->assessment_score),
+            'has_therapist' => ! is_null($patient->therapist_id),
+            'has_subscription' => ! is_null($patient->subscription_id),
+            'assessment_completed' => ! is_null($patient->assessment_score),
             'safety_flagged' => (bool) $patient->safety_flag,
             'compliance_level' => $patient->compliance_level ?? 'not_set',
-            'last_activity' => $patient->updated_at->diffForHumans()
+            'last_activity' => $patient->updated_at->diffForHumans(),
         ];
     }
 
@@ -163,12 +164,12 @@ class PatientRepository implements PatientRepositoryInterface
             'full_name' => 25,
             'age' => 25,
             'gender' => 25,
-            'language' => 25
+            'language' => 25,
         ];
 
         $completed = 0;
         foreach ($fields as $field => $weight) {
-            if (!empty($patient->$field)) {
+            if (! empty($patient->$field)) {
                 $completed += $weight;
             }
         }

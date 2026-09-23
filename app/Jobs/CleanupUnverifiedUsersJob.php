@@ -1,15 +1,16 @@
 <?php
+
 // app/Jobs/CleanupUnverifiedUsersJob.php
 
 namespace App\Jobs;
 
+use App\Enums\UserRole;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class CleanupUnverifiedUsersJob implements ShouldQueue
@@ -34,7 +35,9 @@ class CleanupUnverifiedUsersJob implements ShouldQueue
     {
         Log::info('بدء عملية تنظيف المستخدمين غير المؤكدين...');
 
+        // Invited staff/therapist accounts are managed by administrators, not expired here.
         $deletedCount = User::whereNull('phone_verified_at')
+            ->where('role', UserRole::PATIENT->value)
             ->where('is_active', false)
             ->where('created_at', '<', now()->subHours($this->hoursThreshold))
             ->delete();
