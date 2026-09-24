@@ -131,6 +131,8 @@ class AuditLogService
 
     public const SUPPORT_TICKET_STATUS = 'support.ticket_status';
 
+    public const SUPPORT_TICKET_REPLIED = 'support.ticket_replied';
+
     public const REVIEW_CREATED = 'review.created';
 
     public const REVIEW_UPDATED = 'review.updated';

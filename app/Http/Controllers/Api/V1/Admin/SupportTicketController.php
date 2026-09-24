@@ -49,6 +49,15 @@ class SupportTicketController extends Controller
         ]);
     }
 
+    public function reply(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate(['body' => 'required|string|min:1|max:2000']);
+
+        $reply = $this->support->reply($request->user(), $id, $data['body']);
+
+        return response()->json(['data' => $this->support->replyToArray($reply)], 201);
+    }
+
     public function setStatus(Request $request, string $id): JsonResponse
     {
         $data = $request->validate(['status' => 'required|in:open,closed']);

@@ -14,6 +14,7 @@ use App\Models\Patient;
 use App\Models\Payment;
 use App\Models\RedFlag;
 use App\Models\SessionRecommendation;
+use App\Models\SupportReply;
 use App\Models\Therapist;
 use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
@@ -30,6 +31,7 @@ use App\Notifications\SessionBookedNotification;
 use App\Notifications\SessionRecommendationNotification;
 use App\Notifications\SessionReminderNotification;
 use App\Notifications\SessionStatusChangedNotification;
+use App\Notifications\SupportReplyNotification;
 use App\Notifications\TherapistApprovalNotification;
 use App\Notifications\TherapistSwitchDecidedNotification;
 use App\Services\Notifications\NotificationDispatcher;
@@ -437,6 +439,28 @@ class NotificationService
             new SessionRecommendationNotification($recommendation),
             "session_recommendation:{$recommendation->id}:v{$recommendation->revision}"
         );
+    }
+
+    /**
+     * A staff reply reaches the ticket owner; a patient reply reaches the
+     * assigned agent (nobody is paged when the ticket is unassigned — it is
+     * visible in the open-tickets queue).
+     */
+    public function supportReplied(SupportReply $reply): void
+    {
+        $ticket = $reply->ticket;
+
+        if ($ticket === null) {
+            return;
+        }
+
+        $recipientId = $reply->is_staff ? $ticket->user_id : $ticket->assigned_to;
+
+        if ($recipientId === null || $recipientId === $reply->user_id) {
+            return;
+        }
+
+        $this->notifyOnce(User::find($recipientId), new SupportReplyNotification($reply), "support_reply:{$reply->id}");
     }
 
     /**

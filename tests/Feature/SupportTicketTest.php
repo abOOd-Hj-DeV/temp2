@@ -104,4 +104,58 @@ class SupportTicketTest extends TestCase
         $this->postJson("/api/v1/admin/support/{$ticket->id}/status", ['status' => 'closed'])
             ->assertOk()->assertJsonPath('data.status', 'closed');
     }
+
+    public function test_replies_thread_between_patient_and_staff_until_closed(): void
+    {
+        $ticket = Support::create([
+            'id' => (string) Str::uuid(), 'user_id' => $this->patient->id,
+            'type' => 'technical', 'description' => 'الرابط لا يعمل', 'status' => 'open',
+        ]);
+        $url = "/api/v1/patients/support/{$ticket->id}/replies";
+
+        // Patient reply on an unassigned ticket: stored, audited, nobody paged.
+        Sanctum::actingAs($this->patient, ['*'], 'api');
+        $this->postJson($url, ['body' => ''])->assertUnprocessable();
+        $this->postJson($url, ['body' => 'ما زالت المشكلة موجودة'])->assertCreated()
+            ->assertJsonPath('data.from_staff', false);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'support.ticket_replied', 'entity_id' => $ticket->id]);
+        $this->assertSame(0, $this->agent->notifications()->count());
+
+        // Staff assigns herself and replies → patient notified once.
+        $this->app['auth']->forgetGuards();
+        Sanctum::actingAs($this->agent, ['*'], 'api');
+        $this->postJson("/api/v1/admin/support/{$ticket->id}/assign", ['assigned_to' => $this->agent->id])->assertOk();
+        $this->postJson("/api/v1/admin/support/{$ticket->id}/replies", ['body' => 'جرّب تحديث التطبيق'])->assertCreated()
+            ->assertJsonPath('data.from_staff', true);
+        $this->assertSame(1, $this->patient->notifications()->count());
+
+        $show = $this->getJson("/api/v1/admin/support/{$ticket->id}")->assertOk()->json('data');
+        $this->assertCount(2, $show['replies']);
+        $this->assertFalse($show['replies'][0]['from_staff']);
+        $this->assertSame('support_agent', $show['replies'][1]['author_name']);
+
+        // Patient replies again → assigned agent notified.
+        $this->app['auth']->forgetGuards();
+        Sanctum::actingAs($this->patient, ['*'], 'api');
+        $this->postJson($url, ['body' => 'تم، شكراً'])->assertCreated();
+        $this->assertSame(1, $this->agent->notifications()->count());
+        $this->assertCount(3, $this->getJson("/api/v1/patients/support/{$ticket->id}")->json('data.replies'));
+
+        // Strangers cannot reply; closed tickets reject replies from both sides.
+        $other = $this->makeUser('patient', '+963900000013');
+        Patient::create(['user_id' => $other->id, 'full_name' => 'O', 'age' => 25, 'gender' => 'female', 'language' => 'ar']);
+        $this->app['auth']->forgetGuards();
+        Sanctum::actingAs($other, ['*'], 'api');
+        $this->postJson($url, ['body' => 'hi'])->assertNotFound();
+
+        $this->app['auth']->forgetGuards();
+        Sanctum::actingAs($this->agent, ['*'], 'api');
+        $this->postJson("/api/v1/admin/support/{$ticket->id}/status", ['status' => 'closed'])->assertOk();
+        $this->postJson("/api/v1/admin/support/{$ticket->id}/replies", ['body' => 'late'])->assertStatus(409);
+
+        $this->app['auth']->forgetGuards();
+        Sanctum::actingAs($this->patient, ['*'], 'api');
+        $this->postJson($url, ['body' => 'late'])->assertStatus(409);
+        $this->assertDatabaseCount('support_replies', 3);
+    }
 }

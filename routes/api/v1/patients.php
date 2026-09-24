@@ -51,6 +51,8 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
             ->middleware('throttle:10,1')->name('support.store');
         Route::get('/support/{id}', [SupportController::class, 'show'])
             ->whereUuid('id')->name('support.show');
+        Route::post('/support/{id}/replies', [SupportController::class, 'reply'])
+            ->whereUuid('id')->middleware(['throttle:30,1', 'idempotent'])->name('support.reply');
     });
 
 // Short aliases used by the mobile client spec.

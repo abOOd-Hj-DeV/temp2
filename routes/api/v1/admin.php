@@ -148,6 +148,8 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
         Route::post('/support/{id}/assign', [SupportTicketController::class, 'assign'])
             ->whereUuid('id')->middleware('idempotent');
         Route::post('/support/{id}/status', [SupportTicketController::class, 'setStatus'])->whereUuid('id');
+        Route::post('/support/{id}/replies', [SupportTicketController::class, 'reply'])
+            ->whereUuid('id')->middleware('idempotent');
     });
 
     // FAQ management: the content manager owns the FAQ library.
