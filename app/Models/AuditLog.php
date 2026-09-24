@@ -7,6 +7,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use LogicException;
 
 class AuditLog extends Model
 {
@@ -26,6 +27,15 @@ class AuditLog extends Model
         'details' => 'array',
         'timestamp' => 'datetime',
     ];
+
+    /** Append-only: the database rejects UPDATE/DELETE too; fail fast here. */
+    protected static function booted(): void
+    {
+        $reject = fn () => throw new LogicException('audit_logs is append-only.');
+
+        static::updating($reject);
+        static::deleting($reject);
+    }
 
     /**
      * العلاقة مع المستخدم
