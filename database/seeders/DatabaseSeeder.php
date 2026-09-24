@@ -14,6 +14,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             // تأكد من أن RolePermissionSeeder مُستدعى هنا
             RolePermissionSeeder::class,
+            PackageSeeder::class,
             // إذا كان لديك Seeders أخرى، ضعها هنا
         ]);
     }

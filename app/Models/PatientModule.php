@@ -18,11 +18,20 @@ class PatientModule extends Model
 
     protected $fillable = [
         'id', 'patient_id', 'module_id', 'completed_at', 'status',
+        'homework', 'homework_submitted_at', 'hidden_by', 'hidden_at',
     ];
 
     protected $casts = [
         'completed_at' => 'datetime',
+        'homework' => 'array',
+        'homework_submitted_at' => 'datetime',
+        'hidden_at' => 'datetime',
     ];
+
+    public function getIsHiddenAttribute(): bool
+    {
+        return $this->hidden_at !== null;
+    }
 
     /**
      * العلاقة مع المريض

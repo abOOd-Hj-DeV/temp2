@@ -201,13 +201,13 @@ class TimezoneTest extends TestCase
         $this->postJson('/api/v1/auth/register', [
             'name' => 'Zed', 'email' => 'zed@example.com', 'password' => 'Password123!',
             'password_confirmation' => 'Password123!', 'whatsapp_number' => '+963900000130',
-            'timezone' => 'Mars/Olympus',
+            'timezone' => 'Mars/Olympus', 'privacy_accepted' => true,
         ])->assertUnprocessable()->assertJsonValidationErrors('timezone');
 
         $this->postJson('/api/v1/auth/register', [
             'name' => 'Zed', 'email' => 'zed@example.com', 'password' => 'Password123!',
             'password_confirmation' => 'Password123!', 'whatsapp_number' => '+963900000130',
-            'timezone' => 'Europe/Berlin',
+            'timezone' => 'Europe/Berlin', 'privacy_accepted' => true,
         ])->assertCreated();
         $this->assertSame('Europe/Berlin', User::where('whatsapp_number', '+963900000130')->firstOrFail()->timezone());
 

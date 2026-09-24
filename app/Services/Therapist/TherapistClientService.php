@@ -10,6 +10,7 @@ use App\Models\TherapySession;
 use App\Services\Session\SessionService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -23,10 +24,48 @@ class TherapistClientService
 {
     public function __construct(private SessionService $sessions) {}
 
-    public function list(Therapist $therapist, int $perPage = 15): LengthAwarePaginator
-    {
+    public const STATUSES = ['active', 'past'];
+
+    public const SORTS = ['name', 'recent'];
+
+    /**
+     * Paginated client list with optional name search, status filter
+     * (active = currently assigned to this therapist, past = former client
+     * who only has session history) and sort (name | recent activity).
+     */
+    public function list(
+        Therapist $therapist,
+        int $perPage = 15,
+        ?string $search = null,
+        ?string $status = null,
+        string $sort = 'name',
+    ): LengthAwarePaginator {
+        $tid = $therapist->user_id;
+        $sessions = fn () => TherapySession::query()
+            ->whereColumn('therapy_sessions.patient_id', 'patients.user_id')
+            ->where('therapy_sessions.therapist_id', $tid);
+        $notCancelled = SessionStatus::CANCELLED->value;
+
         return $this->clientsQuery($therapist)
             ->with('user:id,is_active')
+            ->addSelect([
+                'patients.*',
+                'completed_sessions_count' => $sessions()->selectRaw('count(*)')
+                    ->where('status', SessionStatus::COMPLETED->value),
+                'last_session_date' => $sessions()->selectRaw('max(session_date)')
+                    ->where('status', SessionStatus::COMPLETED->value),
+                'next_session_date' => $sessions()->selectRaw('min(session_date)')
+                    ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+                    ->whereDate('session_date', '>=', now()->toDateString()),
+            ])
+            ->when($search, fn (Builder $q) => $q->whereLike(
+                'full_name', '%'.str_replace(['%', '_'], ['\\%', '\\_'], $search).'%', caseSensitive: false,
+            ))
+            ->when($status === 'active', fn (Builder $q) => $q->where('therapist_id', $tid))
+            ->when($status === 'past', fn (Builder $q) => $q->where(
+                fn (Builder $w) => $w->whereNull('therapist_id')->orWhere('therapist_id', '!=', $tid),
+            ))
+            ->when($sort === 'recent', fn (Builder $q) => $q->orderByRaw('last_session_date DESC NULLS LAST'))
             ->orderBy('full_name')
             ->paginate($perPage);
     }
@@ -112,9 +151,9 @@ class TherapistClientService
         ]);
     }
 
-    public function clientToArray(Patient $patient): array
+    public function clientToArray(Patient $patient, ?Therapist $therapist = null): array
     {
-        return [
+        $row = [
             'id' => $patient->user_id,
             'full_name' => $patient->full_name,
             'age' => $patient->age,
@@ -122,6 +161,23 @@ class TherapistClientService
             'language' => $patient->language,
             'is_assigned' => $patient->therapist_id !== null,
         ];
+
+        if ($therapist !== null) {
+            $row['status'] = $patient->therapist_id === $therapist->user_id ? 'active' : 'past';
+        }
+
+        foreach (['completed_sessions_count', 'last_session_date', 'next_session_date'] as $computed) {
+            if (array_key_exists($computed, $patient->getAttributes())) {
+                $value = $patient->getAttribute($computed);
+                $row[$computed] = match (true) {
+                    $computed === 'completed_sessions_count' => (int) $value,
+                    $value === null => null,
+                    default => Carbon::parse($value)->toDateString(),
+                };
+            }
+        }
+
+        return $row;
     }
 
     public function noteToArray(TherapistClientNote $note): array

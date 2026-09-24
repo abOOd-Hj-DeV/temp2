@@ -35,6 +35,7 @@ class AuthFlowTest extends TestCase
             'password' => 'Secret123!',
             'password_confirmation' => 'Secret123!',
             'whatsapp_number' => '+963900000001',
+            'privacy_accepted' => true,
         ], $overrides);
     }
 

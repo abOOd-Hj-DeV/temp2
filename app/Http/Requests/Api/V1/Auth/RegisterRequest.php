@@ -31,6 +31,7 @@ class RegisterRequest extends FormRequest
             'password' => ['required', 'string', 'min:8', 'confirmed'],
             'whatsapp_number' => ['required', 'string', 'regex:/^\+?[0-9]{8,15}$/'],
             'timezone' => ['nullable', 'string', 'timezone:all'],
+            'privacy_accepted' => ['required', 'accepted'],
         ];
     }
 }

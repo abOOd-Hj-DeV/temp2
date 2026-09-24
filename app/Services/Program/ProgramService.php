@@ -117,9 +117,13 @@ class ProgramService
             'title' => $module->title,
             'description' => $module->description,
             'content_type' => $module->content_type,
+            'body' => $module->body,
+            'media_url' => $module->media_url,
             'exercise' => $module->exercise,
+            'homework_prompt' => $module->homework_prompt,
             'tracking_tools' => $module->tracking_tools,
             'order' => (int) $module->order,
+            'is_hideable' => (bool) $module->is_hideable,
         ];
     }
 }

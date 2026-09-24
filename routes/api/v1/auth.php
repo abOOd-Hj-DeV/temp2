@@ -4,6 +4,8 @@ use App\Http\Controllers\Api\V1\AuthController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('auth')->name('auth.')->group(function () {
+    Route::get('/privacy-policy', [AuthController::class, 'privacyPolicy'])
+        ->middleware('throttle:60,1')->name('privacy_policy');
     Route::post('/register', [AuthController::class, 'register'])
         ->middleware('throttle:5,1')->name('register');
 
@@ -40,6 +42,8 @@ Route::prefix('auth')->name('auth.')->group(function () {
     Route::middleware('auth:api')->group(function () {
         Route::get('/user', [AuthController::class, 'user'])->name('user');
         Route::put('/user/timezone', [AuthController::class, 'updateTimezone'])->name('user.timezone');
+        Route::put('/user/password', [AuthController::class, 'changePassword'])
+            ->middleware('throttle:5,1')->name('user.password');
         Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
         Route::post('/logout-all', [AuthController::class, 'logoutAll'])->name('logout.all');
     });

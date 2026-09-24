@@ -8,24 +8,30 @@ use App\Enums\SessionStatus;
 use App\Enums\UserRole;
 use App\Jobs\RetryNotificationJob;
 use App\Models\Assessment;
+use App\Models\DocumentRequest;
 use App\Models\Message;
 use App\Models\Patient;
 use App\Models\Payment;
 use App\Models\RedFlag;
+use App\Models\SessionRecommendation;
+use App\Models\SupportReply;
 use App\Models\Therapist;
 use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Notifications\AssessmentCompletedNotification;
 use App\Notifications\ChatMessageReceivedNotification;
+use App\Notifications\DocumentRequestNotification;
 use App\Notifications\PaymentProofPendingNotification;
 use App\Notifications\PaymentReviewedNotification;
 use App\Notifications\PaymentReviewOverdueNotification;
 use App\Notifications\RedFlagEscalatedNotification;
 use App\Notifications\RedFlagRaisedNotification;
 use App\Notifications\SessionBookedNotification;
+use App\Notifications\SessionRecommendationNotification;
 use App\Notifications\SessionReminderNotification;
 use App\Notifications\SessionStatusChangedNotification;
+use App\Notifications\SupportReplyNotification;
 use App\Notifications\TherapistApprovalNotification;
 use App\Notifications\TherapistSwitchDecidedNotification;
 use App\Services\Notifications\NotificationDispatcher;
@@ -373,6 +379,28 @@ class NotificationService
         }
     }
 
+    /** Staff asked a user for a document. */
+    public function documentRequested(DocumentRequest $request): void
+    {
+        $this->notifyOnce($request->user, new DocumentRequestNotification($request, 'document_requested'), "document_request.requested:{$request->id}");
+    }
+
+    /** The user uploaded the document; the requesting staff member is told. */
+    public function documentSubmitted(DocumentRequest $request): void
+    {
+        $key = "document_request.submitted:{$request->id}:".($request->submitted_at?->timestamp ?? 0);
+
+        $this->notifyOnce($request->requester, new DocumentRequestNotification($request, 'document_submitted'), $key);
+    }
+
+    /** Staff approved or rejected the document. */
+    public function documentReviewed(DocumentRequest $request): void
+    {
+        $key = "document_request.reviewed:{$request->id}:{$request->status}:".($request->reviewed_at?->timestamp ?? 0);
+
+        $this->notifyOnce($request->user, new DocumentRequestNotification($request, 'document_reviewed'), $key);
+    }
+
     /**
      * The chat layer calls this only for the first unread message of a burst,
      * so a receiver gets one alert per unread run rather than one per message.
@@ -402,6 +430,37 @@ class NotificationService
             $key,
             ['session_id' => $session->id, 'window' => $window]
         );
+    }
+
+    public function sessionRecommendationSaved(SessionRecommendation $recommendation): void
+    {
+        $this->notifyOnce(
+            User::find($recommendation->patient_id),
+            new SessionRecommendationNotification($recommendation),
+            "session_recommendation:{$recommendation->id}:v{$recommendation->revision}"
+        );
+    }
+
+    /**
+     * A staff reply reaches the ticket owner; a patient reply reaches the
+     * assigned agent (nobody is paged when the ticket is unassigned — it is
+     * visible in the open-tickets queue).
+     */
+    public function supportReplied(SupportReply $reply): void
+    {
+        $ticket = $reply->ticket;
+
+        if ($ticket === null) {
+            return;
+        }
+
+        $recipientId = $reply->is_staff ? $ticket->user_id : $ticket->assigned_to;
+
+        if ($recipientId === null || $recipientId === $reply->user_id) {
+            return;
+        }
+
+        $this->notifyOnce(User::find($recipientId), new SupportReplyNotification($reply), "support_reply:{$reply->id}");
     }
 
     /**

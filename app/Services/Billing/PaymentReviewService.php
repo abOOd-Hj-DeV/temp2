@@ -19,6 +19,7 @@ use App\Services\Session\SessionService;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
@@ -226,15 +227,28 @@ class PaymentReviewService
             ?? $subscription->package?->duration_days
             ?? throw new ConflictException('The subscription has no duration; it cannot be activated.');
 
+        $start = self::validityStart($subscription);
+
         $this->subscriptions->update($subscription, [
             'verification_status' => 'approved',
-            'start_date' => now()->toDateString(),
-            'end_date' => now()->addDays($days)->toDateString(),
+            'start_date' => $start->toDateString(),
+            'end_date' => $start->copy()->addDays($days)->toDateString(),
             'therapist_id' => $subscription->therapist_id ?? $subscription->patient?->therapist_id,
         ]);
 
         // Point the patient's profile at the live subscription.
         $subscription->patient?->update(['subscription_id' => $subscription->id]);
+    }
+
+    /**
+     * Package validity begins at the first hour of the day after approval, in
+     * the patient's timezone, so the approval day itself is never consumed.
+     */
+    public static function validityStart(Subscription $subscription): Carbon
+    {
+        $tz = $subscription->patient?->user?->timezone() ?? config('app.timezone', 'UTC');
+
+        return now($tz)->addDay()->startOfDay();
     }
 
     public function pending(int $perPage): LengthAwarePaginator

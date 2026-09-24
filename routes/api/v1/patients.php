@@ -22,10 +22,13 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
         Route::get('/post-session/{sessionId}', [PatientController::class, 'getPostSession'])
             ->whereUuid('sessionId')->name('post-session');
         Route::get('/programs', [PatientController::class, 'getPrograms'])->name('programs');
+        Route::get('/recommendations', [PatientController::class, 'getRecommendations'])->name('recommendations');
         Route::get('/modules/{module}', [PatientController::class, 'getModule'])
             ->whereUuid('module')->name('modules.show');
         Route::post('/modules/{module}/complete', [PatientController::class, 'completeModule'])
             ->whereUuid('module')->name('modules.complete');
+        Route::put('/modules/{module}/homework', [PatientController::class, 'submitHomework'])
+            ->whereUuid('module')->name('modules.homework');
         Route::delete('/account', [PatientController::class, 'deleteAccount'])->name('account.delete');
         Route::get('/export-data', [PatientController::class, 'exportData'])->middleware('throttle:export')->name('data.export');
 
@@ -35,6 +38,7 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
 
         Route::post('/mood', [MoodController::class, 'store'])->middleware('throttle:30,1')->name('mood.store');
         Route::get('/mood/chart', [MoodController::class, 'chart'])->name('mood.chart');
+        Route::get('/mood/history', [MoodController::class, 'history'])->name('mood.history');
 
         Route::get('/emergency', [PatientController::class, 'getEmergency'])->name('emergency');
         Route::post('/emergency/alert', [PatientController::class, 'postEmergencyAlert'])
@@ -47,6 +51,8 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
             ->middleware('throttle:10,1')->name('support.store');
         Route::get('/support/{id}', [SupportController::class, 'show'])
             ->whereUuid('id')->name('support.show');
+        Route::post('/support/{id}/replies', [SupportController::class, 'reply'])
+            ->whereUuid('id')->middleware(['throttle:30,1', 'idempotent'])->name('support.reply');
     });
 
 // Short aliases used by the mobile client spec.

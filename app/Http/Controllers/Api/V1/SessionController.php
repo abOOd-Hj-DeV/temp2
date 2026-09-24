@@ -9,6 +9,7 @@ use App\Http\Requests\Api\V1\Session\CompleteSessionRequest;
 use App\Http\Requests\Api\V1\Session\SessionLinkRequest;
 use App\Models\TherapySession;
 use App\Services\Billing\PaymentReviewService;
+use App\Services\Session\SessionRecommendationService;
 use App\Services\Session\SessionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +19,7 @@ class SessionController extends Controller
     public function __construct(
         private SessionService $sessionService,
         private PaymentReviewService $paymentReview,
+        private SessionRecommendationService $recommendations,
     ) {}
 
     /**
@@ -169,6 +171,33 @@ class SessionController extends Controller
         $session = $this->sessionService->report($session, $request->user(), $data['summary']);
 
         return response()->json(['message' => 'Report saved.', 'session' => $this->sessionService->toArray($session, $request->user())]);
+    }
+
+    /** Therapist's structured next step (package / program / note) for a completed session. */
+    public function saveRecommendation(Request $request, TherapySession $session): JsonResponse
+    {
+        $data = $request->validate([
+            'package_id' => ['nullable', 'uuid'],
+            'program_id' => ['nullable', 'uuid'],
+            'note' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $recommendation = $this->recommendations->save($session, $request->user(), $data);
+
+        return response()->json([
+            'message' => 'Recommendation saved.',
+            'recommendation' => $this->recommendations->toArray($recommendation->load(['package', 'program', 'therapist'])),
+        ]);
+    }
+
+    public function recommendation(Request $request, TherapySession $session): JsonResponse
+    {
+        $this->assertParticipant($request, $session);
+        $recommendation = $this->recommendations->forSession($session);
+
+        return response()->json([
+            'recommendation' => $recommendation === null ? null : $this->recommendations->toArray($recommendation),
+        ]);
     }
 
     /** Therapist attaches the meeting link. */

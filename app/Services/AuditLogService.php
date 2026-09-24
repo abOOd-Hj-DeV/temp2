@@ -19,6 +19,10 @@ class AuditLogService
 
     public const THERAPIST_LIMIT_CHANGED = 'therapist.limit_changed';
 
+    public const THERAPIST_BLOCKED_PERIOD_CREATED = 'therapist.blocked_period_created';
+
+    public const THERAPIST_BLOCKED_PERIOD_DELETED = 'therapist.blocked_period_deleted';
+
     public const SESSION_BOOKED = 'session.booked';
 
     public const SESSION_TRANSITIONED = 'session.transitioned';
@@ -47,6 +51,8 @@ class AuditLogService
 
     public const SESSION_REPORT_REVISED = 'session.report_revised';
 
+    public const SESSION_RECOMMENDATION_SAVED = 'session.recommendation_saved';
+
     public const PACKAGE_CREATED = 'package.created';
 
     public const PACKAGE_UPDATED = 'package.updated';
@@ -62,6 +68,8 @@ class AuditLogService
     public const LOGIN_SUCCEEDED = 'auth.login';
 
     public const PASSWORD_RESET = 'auth.password_reset';
+
+    public const PASSWORD_CHANGED = 'auth.password_changed';
 
     public const LOGOUT_ALL = 'auth.logout_all';
 
@@ -95,6 +103,10 @@ class AuditLogService
 
     public const MODULE_DELETED = 'module.deleted';
 
+    public const MODULE_HIDDEN = 'module.hidden_for_patient';
+
+    public const MODULE_UNHIDDEN = 'module.unhidden_for_patient';
+
     public const STAFF_ACCOUNT_CREATED = 'staff.account_created';
 
     public const STAFF_INVITATION_RESENT = 'staff.invitation_resent';
@@ -113,11 +125,29 @@ class AuditLogService
 
     public const CONTENT_ITEM_DELETED = 'content.item_deleted';
 
+    public const CONTENT_ITEM_ASSIGNED = 'content.item_assigned';
+
+    public const CONTENT_ITEM_UNASSIGNED = 'content.item_unassigned';
+
     public const PARALLEL_LAYER_SAVED = 'parallel_layer.saved';
 
     public const SUPPORT_TICKET_ASSIGNED = 'support.ticket_assigned';
 
     public const SUPPORT_TICKET_STATUS = 'support.ticket_status';
+
+    public const SUPPORT_TICKET_REPLIED = 'support.ticket_replied';
+
+    public const REVIEW_CREATED = 'review.created';
+
+    public const REVIEW_UPDATED = 'review.updated';
+
+    public const DOCUMENT_REQUESTED = 'document.requested';
+
+    public const DOCUMENT_SUBMITTED = 'document.submitted';
+
+    public const DOCUMENT_APPROVED = 'document.approved';
+
+    public const DOCUMENT_REJECTED = 'document.rejected';
 
     /** Every action name declared on this class, for filter validation. */
     public static function actions(): array

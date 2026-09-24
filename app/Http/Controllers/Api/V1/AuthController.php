@@ -115,6 +115,26 @@ class AuthController extends Controller
         return response()->json($this->auth->updateTimezone($request->user(), $data['timezone']));
     }
 
+    public function changePassword(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'current_password' => ['required', 'string'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
+        ]);
+
+        return response()->json($this->auth->changePassword($request->user(), $data['current_password'], $data['password']));
+    }
+
+    /** Public: the privacy/confidentiality policy the client must present before registration. */
+    public function privacyPolicy(): JsonResponse
+    {
+        return response()->json([
+            'version' => config('sakina.privacy_policy.version'),
+            'url' => config('sakina.privacy_policy.url'),
+            'summary' => config('sakina.privacy_policy.summary'),
+        ]);
+    }
+
     public function logout(Request $request): JsonResponse
     {
         return response()->json($this->auth->logout($request->user()));

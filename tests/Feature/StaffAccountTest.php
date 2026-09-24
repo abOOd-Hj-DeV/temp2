@@ -229,7 +229,7 @@ class StaffAccountTest extends TestCase
         // Registering the same number must not turn the pending staff row into a patient login.
         $this->postJson('/api/v1/auth/register', [
             'name' => 'Attacker', 'email' => 'attacker@example.com', 'whatsapp_number' => '+963900000552',
-            'password' => 'Attacker123!', 'password_confirmation' => 'Attacker123!',
+            'password' => 'Attacker123!', 'password_confirmation' => 'Attacker123!', 'privacy_accepted' => true,
         ])->assertStatus(422);
 
         // Resend answers generically (no enumeration) but sends nothing for a staff row.

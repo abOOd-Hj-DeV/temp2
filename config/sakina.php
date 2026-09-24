@@ -25,12 +25,30 @@ return [
     'uploads_disk' => env('UPLOADS_DISK', 'local'),
 
     // Hours before the scheduled start after which a patient can no longer cancel.
-    'cancellation_notice_hours' => env('SAKINA_CANCELLATION_NOTICE_HOURS', 12),
+    'cancellation_notice_hours' => env('SAKINA_CANCELLATION_NOTICE_HOURS', 24),
 
-    // Commercial model: patients buy a treatment package (CBT content + sessions),
-    // never a single session. The first session and the introductory module are
-    // free so the product is tried before purchase; cancelling a package stops
-    // future sessions and never refunds money.
+    // Privacy & confidentiality policy the patient accepts at registration. The
+    // accepted version is stored on the account so a later policy change can
+    // re-prompt. PLACEHOLDER text until the legal copy is supplied.
+    'privacy_policy' => [
+        'version' => env('SAKINA_PRIVACY_POLICY_VERSION', '2026-01-placeholder'),
+        'url' => env('SAKINA_PRIVACY_POLICY_URL', 'https://example.invalid/privacy-placeholder'),
+        'summary' => env('SAKINA_PRIVACY_POLICY_SUMMARY', '[PLACEHOLDER] نص سياسة الخصوصية والسرية سيُستبدل بالنسخة القانونية المعتمدة.'),
+    ],
+
+    // Bank-transfer details shown next to the proof-upload step. PLACEHOLDER
+    // values; no API serves them yet (frontend reads its own copy).
+    'bank_transfer' => [
+        'bank_name' => env('SAKINA_BANK_NAME', '[PLACEHOLDER BANK]'),
+        'account_name' => env('SAKINA_BANK_ACCOUNT_NAME', '[PLACEHOLDER ACCOUNT NAME]'),
+        'iban' => env('SAKINA_BANK_IBAN', 'XX00 0000 0000 0000 0000 0000'),
+    ],
+
+    // Commercial model: patients buy a treatment package (CBT content + sessions)
+    // or, when allowed, a standalone paid session that is not tied to any
+    // programme. The first session and the introductory module are free so the
+    // product is tried before purchase; cancelling a package stops future
+    // sessions and never refunds money.
     'package_policy' => [
         // When false, a patient without an active package can only book the free
         // initial session and must purchase a package for anything further.
@@ -62,9 +80,10 @@ return [
     // active clinical staff member is alerted.
     'red_flag_escalation_minutes' => (int) env('SAKINA_RED_FLAG_ESCALATION_MINUTES', 60),
 
-    // Shown on the patient emergency screen (نحن هنا من أجلك).
+    // Shown on the patient emergency screen (نحن هنا من أجلك). PLACEHOLDER
+    // hotline until the real regional number is confirmed.
     'emergency' => [
-        'hotline' => env('SAKINA_EMERGENCY_HOTLINE', '920-033-360'),
+        'hotline' => env('SAKINA_EMERGENCY_HOTLINE', '000-PLACEHOLDER'),
         'whatsapp' => env('SAKINA_EMERGENCY_WHATSAPP', ''),
     ],
 

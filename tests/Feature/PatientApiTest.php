@@ -272,7 +272,7 @@ class PatientApiTest extends TestCase
 
         $this->getJson('/api/v1/patients/emergency')
             ->assertOk()
-            ->assertJsonPath('hotline', '920-033-360')
+            ->assertJsonPath('hotline', config('sakina.emergency.hotline'))
             ->assertJsonStructure(['hotline', 'whatsapp', 'local_services_note', 'safety_plan']);
 
         SafetyPlan::create([

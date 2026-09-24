@@ -17,7 +17,16 @@ class MoodController extends Controller
     {
         $result = $this->moods->log($this->patient($request), $request->validated());
 
-        return response()->json(['message' => 'Mood logged.'] + $result, $result['created'] ? 201 : 200);
+        return response()->json(['message' => 'Mood logged.'] + $result, 201);
+    }
+
+    public function history(Request $request): JsonResponse
+    {
+        $request->validate(['days' => 'nullable|integer|min:7|max:90']);
+
+        return response()->json(
+            $this->moods->history($this->patient($request), (int) $request->input('days', 30))
+        );
     }
 
     public function chart(Request $request): JsonResponse

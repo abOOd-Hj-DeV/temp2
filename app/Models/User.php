@@ -23,6 +23,7 @@ class User extends Authenticatable
         'name', 'email', 'password', 'role',
         'whatsapp_number', 'timezone', 'is_active', 'last_login',
         'phone_verified_at', 'login_attempts', 'deletion_scheduled_at',
+        'privacy_policy_version', 'privacy_accepted_at', 'password_changed_at',
     ];
 
     protected $hidden = [
@@ -35,6 +36,8 @@ class User extends Authenticatable
         'last_login' => 'datetime',
         'deletion_scheduled_at' => 'datetime',
         'anonymized_at' => 'datetime',
+        'privacy_accepted_at' => 'datetime',
+        'password_changed_at' => 'datetime',
         'is_active' => 'boolean',
         'role' => UserRole::class,
     ];

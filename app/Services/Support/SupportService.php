@@ -4,19 +4,24 @@ namespace App\Services\Support;
 
 use App\Enums\SupportType;
 use App\Enums\UserRole;
+use App\Exceptions\ConflictException;
 use App\Models\Support;
+use App\Models\SupportReply;
 use App\Models\User;
 use App\Services\AuditLogService;
 use App\Services\Files\SecureFileService;
+use App\Services\NotificationService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
- * Patient support tickets: open a request (optional attachment), staff
- * triage/assign/close them from the admin dashboard.
+ * Patient support tickets: open a request (optional attachment), exchange
+ * replies with support staff, staff triage/assign/close them from the admin
+ * dashboard. Replies are only accepted while the ticket is open.
  */
 class SupportService
 {
@@ -31,6 +36,7 @@ class SupportService
     public function __construct(
         private SecureFileService $files,
         private AuditLogService $audit,
+        private NotificationService $notifications,
     ) {}
 
     public function create(User $user, array $data, ?UploadedFile $file): Support
@@ -73,7 +79,7 @@ class SupportService
             throw new NotFoundHttpException('Support ticket not found.');
         }
 
-        return $ticket;
+        return $ticket->load('replies.author:id,name,role');
     }
 
     public function listAll(array $filters, int $perPage = 20): LengthAwarePaginator
@@ -118,6 +124,49 @@ class SupportService
         return $ticket->refresh();
     }
 
+    /** Owner or staff adds a reply; the ticket must still be open. */
+    public function reply(User $author, string $id, string $body): SupportReply
+    {
+        $ticket = $this->show($author, $id);
+
+        if ($ticket->status !== 'open') {
+            throw new ConflictException('This ticket is closed. Open a new ticket to continue.');
+        }
+
+        $reply = DB::transaction(function () use ($author, $ticket, $body) {
+            $reply = SupportReply::create([
+                'support_id' => $ticket->id,
+                'user_id' => $author->id,
+                'is_staff' => $this->isStaff($author),
+                'body' => trim($body),
+            ]);
+            $ticket->touch();
+
+            $this->audit->record($author, AuditLogService::SUPPORT_TICKET_REPLIED, $ticket->id, [
+                'reply_id' => $reply->id,
+                'from_staff' => $reply->is_staff,
+            ]);
+
+            return $reply;
+        });
+
+        $this->notifications->deliver('supportReplied', $reply->load('ticket'));
+
+        return $reply;
+    }
+
+    public function replyToArray(SupportReply $reply): array
+    {
+        return [
+            'id' => $reply->id,
+            'user_id' => $reply->user_id,
+            'from_staff' => $reply->is_staff,
+            'author_name' => $reply->relationLoaded('author') ? $reply->author?->name : null,
+            'body' => $reply->body,
+            'created_at' => $reply->created_at?->toIso8601String(),
+        ];
+    }
+
     public function toArray(Support $ticket): array
     {
         return [
@@ -130,7 +179,11 @@ class SupportService
             'status' => $ticket->status,
             'assigned_to' => $ticket->assigned_to,
             'created_at' => $ticket->created_at?->toIso8601String(),
+            'updated_at' => $ticket->updated_at?->toIso8601String(),
             'user' => $ticket->relationLoaded('user') ? $ticket->user : null,
+            'replies' => $ticket->relationLoaded('replies')
+                ? $ticket->replies->map(fn (SupportReply $r) => $this->replyToArray($r))->values()->all()
+                : null,
         ];
     }
 

@@ -7,6 +7,7 @@ use App\Http\Requests\Api\V1\Patient\UpdateProfileRequest;
 use App\Services\Patient\PatientAccountService;
 use App\Services\Patient\PatientDashboardService;
 use App\Services\Patient\PatientProfileService;
+use App\Services\Session\SessionRecommendationService;
 use App\Services\Therapist\TherapistContentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,6 +20,7 @@ class PatientController extends Controller
         private PatientDashboardService $dashboard,
         private PatientAccountService $account,
         private TherapistContentService $therapistContent,
+        private SessionRecommendationService $recommendations,
     ) {}
 
     public function getProfile(Request $request): JsonResponse
@@ -60,6 +62,16 @@ class PatientController extends Controller
         return response()->json($this->dashboard->postSession($request->user(), $sessionId));
     }
 
+    /** Therapist recommendations (package / program / note) from the patient's completed sessions. */
+    public function getRecommendations(Request $request): JsonResponse
+    {
+        $items = $this->recommendations->forPatient($this->patientOf($request), (int) $request->input('limit', 10));
+
+        return response()->json([
+            'data' => $items->map(fn ($r) => $this->recommendations->toArray($r))->values(),
+        ]);
+    }
+
     public function getPrograms(Request $request): JsonResponse
     {
         return response()->json($this->dashboard->programs($request->user()));
@@ -72,7 +84,25 @@ class PatientController extends Controller
 
     public function completeModule(Request $request, string $module): JsonResponse
     {
-        return response()->json($this->dashboard->completeModule($request->user(), $module));
+        $data = $request->validate(self::homeworkRules(false));
+
+        return response()->json($this->dashboard->completeModule($request->user(), $module, $data['homework'] ?? null));
+    }
+
+    public function submitHomework(Request $request, string $module): JsonResponse
+    {
+        $data = $request->validate(self::homeworkRules(true));
+
+        return response()->json($this->dashboard->submitHomework($request->user(), $module, $data['homework']));
+    }
+
+    /** @return array<string, string> */
+    private static function homeworkRules(bool $required): array
+    {
+        return [
+            'homework' => ($required ? 'required' : 'sometimes').'|array|min:1|max:50',
+            'homework.*' => 'nullable|string|max:5000',
+        ];
     }
 
     public function getEmergency(Request $request): JsonResponse

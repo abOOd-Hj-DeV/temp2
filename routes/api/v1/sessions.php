@@ -27,12 +27,14 @@ Route::middleware(['auth:api', 'status'])->prefix('sessions')->group(function ()
     // Shared read/cancel for the session's participants.
     Route::get('/{session}', [SessionController::class, 'show'])->whereUuid('session');
     Route::post('/{session}/cancel', [SessionController::class, 'cancel'])->whereUuid('session');
+    Route::get('/{session}/recommendation', [SessionController::class, 'recommendation'])->whereUuid('session');
 
     // Therapist actions (ownership enforced in the service; approved only).
     Route::middleware(['role:'.UserRole::THERAPIST->value, 'therapist.approved'])->group(function () {
         Route::post('/{session}/confirm', [SessionController::class, 'confirm'])->whereUuid('session');
         Route::post('/{session}/complete', [SessionController::class, 'complete'])->whereUuid('session');
         Route::post('/{session}/report', [SessionController::class, 'report'])->whereUuid('session');
+        Route::put('/{session}/recommendation', [SessionController::class, 'saveRecommendation'])->whereUuid('session');
         Route::post('/{session}/link', [SessionController::class, 'setLink'])->whereUuid('session');
         Route::post('/{session}/reschedule/decide', [SessionController::class, 'decideReschedule'])->whereUuid('session');
         Route::post('/{session}/cancel/decide', [SessionController::class, 'decideCancellation'])->whereUuid('session');
