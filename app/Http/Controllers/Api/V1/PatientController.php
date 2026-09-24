@@ -7,6 +7,7 @@ use App\Http\Requests\Api\V1\Patient\UpdateProfileRequest;
 use App\Services\Patient\PatientAccountService;
 use App\Services\Patient\PatientDashboardService;
 use App\Services\Patient\PatientProfileService;
+use App\Services\Session\SessionRecommendationService;
 use App\Services\Therapist\TherapistContentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,6 +20,7 @@ class PatientController extends Controller
         private PatientDashboardService $dashboard,
         private PatientAccountService $account,
         private TherapistContentService $therapistContent,
+        private SessionRecommendationService $recommendations,
     ) {}
 
     public function getProfile(Request $request): JsonResponse
@@ -58,6 +60,16 @@ class PatientController extends Controller
     public function getPostSession(Request $request, string $sessionId): JsonResponse
     {
         return response()->json($this->dashboard->postSession($request->user(), $sessionId));
+    }
+
+    /** Therapist recommendations (package / program / note) from the patient's completed sessions. */
+    public function getRecommendations(Request $request): JsonResponse
+    {
+        $items = $this->recommendations->forPatient($this->patientOf($request), (int) $request->input('limit', 10));
+
+        return response()->json([
+            'data' => $items->map(fn ($r) => $this->recommendations->toArray($r))->values(),
+        ]);
     }
 
     public function getPrograms(Request $request): JsonResponse

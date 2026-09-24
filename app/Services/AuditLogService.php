@@ -51,6 +51,8 @@ class AuditLogService
 
     public const SESSION_REPORT_REVISED = 'session.report_revised';
 
+    public const SESSION_RECOMMENDATION_SAVED = 'session.recommendation_saved';
+
     public const PACKAGE_CREATED = 'package.created';
 
     public const PACKAGE_UPDATED = 'package.updated';

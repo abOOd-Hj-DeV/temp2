@@ -10,6 +10,7 @@ use App\Models\Patient;
 use App\Models\PatientModule;
 use App\Models\Program;
 use App\Models\SafetyPlan;
+use App\Models\SessionRecommendation;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
@@ -119,12 +120,34 @@ class PatientDashboardService
                 'summary' => $canReview ? $session->summary : null,
             ],
             'completed' => $canReview,
+            'recommendation' => $this->recommendationToArray(
+                SessionRecommendation::with(['package', 'program'])->where('session_id', $session->id)->first()
+            ),
             'next_session' => $next ? $this->sessionToArray($next) : null,
             'next_steps' => array_values(array_filter([
                 $canReview ? null : 'wait_for_completion',
                 $next ? null : 'book_next_session',
                 'log_mood',
             ])),
+        ];
+    }
+
+    private function recommendationToArray(?SessionRecommendation $r): ?array
+    {
+        if ($r === null) {
+            return null;
+        }
+
+        return [
+            'id' => $r->id,
+            'package' => $r->package === null ? null : [
+                'id' => $r->package->id, 'code' => $r->package->code, 'name' => $r->package->name,
+                'price' => $r->package->price, 'number_of_sessions' => $r->package->number_of_sessions,
+                'duration_days' => $r->package->duration_days,
+            ],
+            'program' => $r->program === null ? null : ['id' => $r->program->id, 'name' => $r->program->name],
+            'note' => $r->note,
+            'updated_at' => $r->updated_at?->toISOString(),
         ];
     }
 

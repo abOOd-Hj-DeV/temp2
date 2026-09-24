@@ -13,6 +13,7 @@ use App\Models\Message;
 use App\Models\Patient;
 use App\Models\Payment;
 use App\Models\RedFlag;
+use App\Models\SessionRecommendation;
 use App\Models\Therapist;
 use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
@@ -26,6 +27,7 @@ use App\Notifications\PaymentReviewOverdueNotification;
 use App\Notifications\RedFlagEscalatedNotification;
 use App\Notifications\RedFlagRaisedNotification;
 use App\Notifications\SessionBookedNotification;
+use App\Notifications\SessionRecommendationNotification;
 use App\Notifications\SessionReminderNotification;
 use App\Notifications\SessionStatusChangedNotification;
 use App\Notifications\TherapistApprovalNotification;
@@ -425,6 +427,15 @@ class NotificationService
             sprintf('Sakina reminder: your session is on %s.', $this->localSessionTime($session, $session->patient?->user)),
             $key,
             ['session_id' => $session->id, 'window' => $window]
+        );
+    }
+
+    public function sessionRecommendationSaved(SessionRecommendation $recommendation): void
+    {
+        $this->notifyOnce(
+            User::find($recommendation->patient_id),
+            new SessionRecommendationNotification($recommendation),
+            "session_recommendation:{$recommendation->id}:v{$recommendation->revision}"
         );
     }
 

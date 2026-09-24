@@ -22,6 +22,7 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
         Route::get('/post-session/{sessionId}', [PatientController::class, 'getPostSession'])
             ->whereUuid('sessionId')->name('post-session');
         Route::get('/programs', [PatientController::class, 'getPrograms'])->name('programs');
+        Route::get('/recommendations', [PatientController::class, 'getRecommendations'])->name('recommendations');
         Route::get('/modules/{module}', [PatientController::class, 'getModule'])
             ->whereUuid('module')->name('modules.show');
         Route::post('/modules/{module}/complete', [PatientController::class, 'completeModule'])
