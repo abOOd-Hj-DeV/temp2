@@ -140,6 +140,78 @@ class TherapistContentTest extends TestCase
         ])->assertNotFound();
     }
 
+    public function test_library_item_is_reusable_across_clients(): void
+    {
+        $this->patient->update(['therapist_id' => $this->therapist->user_id]);
+        $secondUser = $this->makeUser('patient', '+963900000024');
+        $second = Patient::create([
+            'user_id' => $secondUser->id, 'full_name' => 'Second', 'age' => 28,
+            'gender' => 'female', 'language' => 'ar', 'therapist_id' => $this->therapist->user_id,
+        ]);
+        $strangerUser = $this->makeUser('patient', '+963900000025');
+        Patient::create(['user_id' => $strangerUser->id, 'full_name' => 'S', 'age' => 22, 'gender' => 'male', 'language' => 'ar']);
+
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+
+        // A library item with no addressee is allowed and invisible to patients.
+        $item = $this->postJson('/api/v1/therapists/content', [
+            'title' => 'Grounding', 'content_type' => 'link', 'url' => 'https://example.org/grounding',
+        ])->assertCreated()->json('content');
+        $this->assertSame([], $item['assigned_patients']);
+        $this->assertDatabaseCount('therapist_content_assignments', 0);
+
+        // Share with client one, then reuse for client two — same item id, two assignments.
+        $this->postJson("/api/v1/therapists/content/{$item['id']}/assign", ['patient_ids' => [$this->patient->user_id]])
+            ->assertOk()->assertJsonPath('content.assigned_count', 1);
+        $this->postJson("/api/v1/therapists/content/{$item['id']}/assign", ['patient_ids' => [$second->user_id, $this->patient->user_id]])
+            ->assertOk()->assertJsonPath('content.assigned_count', 2);
+        $this->assertDatabaseCount('therapist_content_assignments', 2);
+        $this->assertDatabaseCount('therapist_contents', 1);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'content.item_assigned', 'entity_id' => $item['id']]);
+
+        // Non-client → 404 and nothing attached; bad payload → 422.
+        $this->postJson("/api/v1/therapists/content/{$item['id']}/assign", ['patient_ids' => [$strangerUser->id]])->assertNotFound();
+        $this->postJson("/api/v1/therapists/content/{$item['id']}/assign", ['patient_ids' => []])->assertUnprocessable();
+        $this->assertDatabaseCount('therapist_content_assignments', 2);
+
+        // Library filters: by client, by type, by search.
+        $this->postJson('/api/v1/therapists/content', [
+            'patient_id' => $second->user_id, 'title' => 'Sleep diary', 'content_type' => 'text', 'body' => 'Track bedtime.',
+        ])->assertCreated()->assertJsonPath('content.assigned_count', 1);
+        $this->getJson('/api/v1/therapists/content')->assertOk()->assertJsonCount(2, 'data.data');
+        $this->getJson("/api/v1/therapists/content?patient_id={$this->patient->user_id}")->assertOk()->assertJsonCount(1, 'data.data');
+        $this->getJson("/api/v1/therapists/content?patient_id={$second->user_id}")->assertOk()->assertJsonCount(2, 'data.data');
+        $this->getJson('/api/v1/therapists/content?content_type=text')->assertOk()->assertJsonCount(1, 'data.data');
+        $this->getJson('/api/v1/therapists/content?search=diary')->assertOk()->assertJsonCount(1, 'data.data')
+            ->assertJsonPath('data.data.0.title', 'Sleep diary');
+
+        // Both clients see the shared item; only the second sees the diary.
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->getJson('/api/v1/patients/content')->assertOk()->assertJsonCount(1, 'data.data')
+            ->assertJsonPath('data.data.0.title', 'Grounding');
+        Sanctum::actingAs($secondUser, ['*'], 'api');
+        $this->getJson('/api/v1/patients/content')->assertOk()->assertJsonCount(2, 'data.data');
+
+        // Un-share from client one: item survives, client one loses access.
+        Sanctum::actingAs($this->therapistUser, ['*'], 'api');
+        $this->deleteJson("/api/v1/therapists/content/{$item['id']}/assign/{$this->patient->user_id}")
+            ->assertOk()->assertJsonPath('content.assigned_count', 1);
+        $this->deleteJson("/api/v1/therapists/content/{$item['id']}/assign/{$this->patient->user_id}")->assertNotFound();
+        $this->assertDatabaseHas('therapist_contents', ['id' => $item['id'], 'patient_id' => $second->user_id]);
+        Sanctum::actingAs($this->patientUser, ['*'], 'api');
+        $this->getJson('/api/v1/patients/content')->assertOk()->assertJsonCount(0, 'data.data');
+
+        // Another therapist cannot see or share the item.
+        $otherTherapistUser = $this->makeUser('therapist', '+963900000026');
+        Therapist::create([
+            'user_id' => $otherTherapistUser->id, 'full_name' => 'Dr. Other', 'specialty' => 'anxiety',
+            'country' => 'DE', 'languages' => ['ar'], 'approval_status' => 'approved',
+        ]);
+        Sanctum::actingAs($otherTherapistUser, ['*'], 'api');
+        $this->getJson("/api/v1/therapists/content/{$item['id']}")->assertNotFound();
+        $this->postJson("/api/v1/therapists/content/{$item['id']}/assign", ['patient_ids' => [$second->user_id]])->assertNotFound();
+    }
+
     public function test_content_rejected_for_non_client_patient(): void
     {
         // Patient NOT assigned to this therapist → 404 (no enumeration).

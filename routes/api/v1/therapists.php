@@ -55,6 +55,10 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
             Route::post('/content', [TherapistContentController::class, 'store'])->middleware('idempotent');
             Route::get('/content/{id}', [TherapistContentController::class, 'show'])->whereUuid('id');
             Route::put('/content/{id}', [TherapistContentController::class, 'update'])->whereUuid('id');
+            Route::post('/content/{id}/assign', [TherapistContentController::class, 'assign'])
+                ->whereUuid('id')->middleware('idempotent');
+            Route::delete('/content/{id}/assign/{patientId}', [TherapistContentController::class, 'unassign'])
+                ->whereUuid('id')->whereUuid('patientId');
             Route::delete('/content/{id}', [TherapistContentController::class, 'destroy'])->whereUuid('id');
 
             Route::get('/clients/{id}/modules', [TherapistModuleController::class, 'progress'])->whereUuid('id');

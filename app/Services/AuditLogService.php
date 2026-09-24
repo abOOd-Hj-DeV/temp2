@@ -125,6 +125,10 @@ class AuditLogService
 
     public const CONTENT_ITEM_DELETED = 'content.item_deleted';
 
+    public const CONTENT_ITEM_ASSIGNED = 'content.item_assigned';
+
+    public const CONTENT_ITEM_UNASSIGNED = 'content.item_unassigned';
+
     public const PARALLEL_LAYER_SAVED = 'parallel_layer.saved';
 
     public const SUPPORT_TICKET_ASSIGNED = 'support.ticket_assigned';
