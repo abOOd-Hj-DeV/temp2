@@ -3,7 +3,6 @@
 namespace App\Services\Therapist;
 
 use App\Models\Module;
-use App\Models\Patient;
 use App\Models\PatientModule;
 use App\Models\Program;
 use App\Models\Therapist;
