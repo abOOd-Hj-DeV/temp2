@@ -125,6 +125,10 @@ class AuditLogService
 
     public const SUPPORT_TICKET_STATUS = 'support.ticket_status';
 
+    public const REVIEW_CREATED = 'review.created';
+
+    public const REVIEW_UPDATED = 'review.updated';
+
     /** Every action name declared on this class, for filter validation. */
     public static function actions(): array
     {

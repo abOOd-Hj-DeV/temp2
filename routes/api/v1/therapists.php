@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\V1\ParallelLayerController;
 use App\Http\Controllers\Api\V1\TherapistContentController;
 use App\Http\Controllers\Api\V1\TherapistController;
 use App\Http\Controllers\Api\V1\TherapistModuleController;
+use App\Http\Controllers\Api\V1\TherapistReviewController;
 use App\Http\Controllers\Api\V1\TherapistSwitchController;
 use Illuminate\Support\Facades\Route;
 
@@ -13,6 +14,15 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
     Route::get('/', [TherapistController::class, 'index']);
     Route::get('/{id}/slots', [TherapistController::class, 'slots'])
         ->whereUuid('id');
+    Route::get('/{id}/reviews', [TherapistReviewController::class, 'index'])->whereUuid('id');
+
+    Route::middleware('role:'.UserRole::PATIENT->value)->group(function () {
+        Route::post('/{id}/reviews', [TherapistReviewController::class, 'store'])
+            ->whereUuid('id')->middleware(['throttle:10,1', 'idempotent']);
+        Route::put('/{id}/reviews/mine', [TherapistReviewController::class, 'update'])
+            ->whereUuid('id')->middleware('throttle:10,1');
+        Route::get('/{id}/reviews/mine', [TherapistReviewController::class, 'mine'])->whereUuid('id');
+    });
 
     // Therapist self-service — keep /me/* before /{id} so it isn't swallowed.
     Route::middleware('role:'.UserRole::THERAPIST->value)->group(function () {
@@ -52,6 +62,7 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
             Route::get('/wallet', [TherapistController::class, 'wallet']);
             Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware(['throttle:5,1', 'idempotent']);
             Route::get('/reports', [TherapistController::class, 'reports']);
+            Route::get('/me/reviews', [TherapistReviewController::class, 'own']);
             // Step 1 of a patient's therapist switch: the requested therapist answers.
             Route::get('/me/switch-requests', [TherapistSwitchController::class, 'incoming']);
             Route::post('/me/switch-requests/{switch}/decide', [TherapistSwitchController::class, 'therapistDecide'])
