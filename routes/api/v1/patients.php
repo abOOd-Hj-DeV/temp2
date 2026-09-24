@@ -37,6 +37,7 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
 
         Route::post('/mood', [MoodController::class, 'store'])->middleware('throttle:30,1')->name('mood.store');
         Route::get('/mood/chart', [MoodController::class, 'chart'])->name('mood.chart');
+        Route::get('/mood/history', [MoodController::class, 'history'])->name('mood.history');
 
         Route::get('/emergency', [PatientController::class, 'getEmergency'])->name('emergency');
         Route::post('/emergency/alert', [PatientController::class, 'postEmergencyAlert'])

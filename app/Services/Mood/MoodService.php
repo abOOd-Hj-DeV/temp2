@@ -4,19 +4,19 @@ namespace App\Services\Mood;
 
 use App\Enums\RedFlagPriority;
 use App\Enums\RedFlagType;
-use App\Exceptions\ConflictException;
 use App\Models\MoodLog;
 use App\Models\Patient;
 use App\Services\RedFlagService;
-use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
 /**
- * Daily mood check-ins (1–10). One entry per patient per day; re-logging
- * the same day overwrites it. A streak of low scores raises a LOW_MOOD red
- * flag once (alert_sent) so the clinical team is not spammed.
+ * Mood check-ins (1–10). A patient may log as many entries per day as they
+ * like; every entry is kept. Day-level views (chart series, low-mood streak)
+ * use the most recent entry of each calendar day, so several low check-ins
+ * on one day never count as several low days. A streak of low days raises a
+ * LOW_MOOD red flag once (alert_sent) so the clinical team is not spammed.
  */
 class MoodService
 {
@@ -26,45 +26,43 @@ class MoodService
     {
         $date = $data['log_date'] ?? now($patient->user?->timezone() ?? config('app.timezone', 'UTC'))->toDateString();
 
-        try {
-            $log = DB::transaction(function () use ($patient, $data, $date) {
-                $log = MoodLog::where('patient_id', $patient->user_id)
-                    ->whereDate('log_date', $date)
-                    ->lockForUpdate()
-                    ->first();
-
-                $payload = [
-                    'score' => (int) $data['score'],
-                    'anxiety' => $data['anxiety'] ?? null,
-                    'energy' => $data['energy'] ?? null,
-                    'sleep_hours' => $data['sleep_hours'] ?? null,
-                    'activity_level' => $data['activity_level'] ?? null,
-                    'notes' => $data['notes'] ?? null,
-                ];
-
-                if ($log) {
-                    $log->update($payload);
-                    $log->wasRecentlyCreated = false;
-                } else {
-                    $log = MoodLog::create($payload + [
-                        'id' => (string) Str::uuid(),
-                        'patient_id' => $patient->user_id,
-                        'log_date' => $date,
-                    ]);
-                }
-
-                return $log;
-            });
-        } catch (UniqueConstraintViolationException) {
-            throw new ConflictException('A mood entry for this day was just recorded. Please retry.');
-        }
+        $log = MoodLog::create([
+            'id' => (string) Str::uuid(),
+            'patient_id' => $patient->user_id,
+            'log_date' => $date,
+            'score' => (int) $data['score'],
+            'anxiety' => $data['anxiety'] ?? null,
+            'energy' => $data['energy'] ?? null,
+            'sleep_hours' => $data['sleep_hours'] ?? null,
+            'activity_level' => $data['activity_level'] ?? null,
+            'notes' => $data['notes'] ?? null,
+        ]);
 
         $alert = $this->maybeRaiseAlert($patient, $log);
 
         return [
             'mood' => $this->toArray($log),
-            'created' => $log->wasRecentlyCreated,
+            'created' => true,
             'alert_raised' => $alert,
+        ];
+    }
+
+    /**
+     * Every entry of the last N days, newest first — nothing is collapsed.
+     */
+    public function history(Patient $patient, int $days = 30): array
+    {
+        $from = now()->subDays($days - 1)->startOfDay();
+
+        $logs = MoodLog::where('patient_id', $patient->user_id)
+            ->whereDate('log_date', '>=', $from->toDateString())
+            ->orderByDesc('log_date')
+            ->orderByDesc('created_at')
+            ->get();
+
+        return [
+            'days' => $days,
+            'entries' => $logs->map(fn (MoodLog $l) => $this->toArray($l))->all(),
         ];
     }
 
@@ -78,17 +76,22 @@ class MoodService
         $logs = MoodLog::where('patient_id', $patient->user_id)
             ->whereDate('log_date', '>=', $from->toDateString())
             ->orderBy('log_date')
+            ->orderBy('created_at')
             ->get();
 
-        $byDate = $logs->keyBy(fn (MoodLog $l) => $l->log_date->toDateString());
+        $byDate = $logs->groupBy(fn (MoodLog $l) => $l->log_date->toDateString());
         $series = [];
 
         for ($d = $from->copy(); $d->lte(now()->startOfDay()); $d->addDay()) {
             $key = $d->toDateString();
-            $log = $byDate->get($key);
+            /** @var Collection<int, MoodLog>|null $day */
+            $day = $byDate->get($key);
+            $log = $day?->last();
             $series[] = [
                 'date' => $key,
+                'entries' => $day?->count() ?? 0,
                 'score' => $log?->score,
+                'average_score' => $day === null ? null : round($day->avg('score'), 2),
                 'anxiety' => $log?->anxiety,
                 'energy' => $log?->energy,
                 'sleep_hours' => $log?->sleep_hours,
@@ -125,7 +128,18 @@ class MoodService
             return false;
         }
 
-        if ($this->lowStreak($patient) < $streakNeeded) {
+        $streak = $this->lowStreak($patient);
+
+        if ($streak < $streakNeeded) {
+            return false;
+        }
+
+        $alreadyFlagged = MoodLog::where('patient_id', $patient->user_id)
+            ->where('alert_sent', true)
+            ->whereDate('log_date', '>=', now()->subDays($streak)->toDateString())
+            ->exists();
+
+        if ($alreadyFlagged) {
             return false;
         }
 
@@ -133,7 +147,7 @@ class MoodService
             $patient,
             RedFlagType::LOW_MOOD,
             RedFlagPriority::MEDIUM,
-            sprintf('Mood score ≤ %d for %d consecutive check-ins (latest %d/10 on %s).',
+            sprintf('Mood score ≤ %d for %d consecutive days (latest %d/10 on %s).',
                 $threshold, $streakNeeded, $log->score, $log->log_date->toDateString()),
         );
 
@@ -149,18 +163,22 @@ class MoodService
     }
 
     /**
-     * Length of the run of low scores on strictly consecutive calendar days
-     * ending today or yesterday. A missed day breaks the run; a run that
-     * ended in the past counts as 0.
+     * Length of the run of low days on strictly consecutive calendar days
+     * ending today or yesterday. A day is "low" when its latest entry is at
+     * or below the threshold; extra entries on the same day never add days.
+     * A missed day breaks the run; a run that ended in the past counts as 0.
      */
     private function lowStreak(Patient $patient): int
     {
         $threshold = (int) config('sakina.mood_alert_threshold', 3);
         $recent = MoodLog::where('patient_id', $patient->user_id)
             ->whereDate('log_date', '<=', now()->toDateString())
+            ->whereDate('log_date', '>=', now()->subDays(14)->toDateString())
             ->orderByDesc('log_date')
-            ->limit(14)
-            ->get();
+            ->orderByDesc('created_at')
+            ->get()
+            ->unique(fn (MoodLog $l) => $l->log_date->toDateString())
+            ->values();
 
         $streak = 0;
         $expected = null;
@@ -220,6 +238,7 @@ class MoodService
             'notes' => $log->notes,
             'log_date' => $log->log_date instanceof Carbon ? $log->log_date->toDateString() : $log->log_date,
             'alert_sent' => $log->alert_sent,
+            'logged_at' => $log->created_at?->toIso8601String(),
         ];
     }
 }

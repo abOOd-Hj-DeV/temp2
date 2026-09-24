@@ -264,14 +264,15 @@ class Weeks1To7HardeningTest extends TestCase
         Storage::disk('local')->assertMissing('licenses/lic.pdf');
     }
 
-    public function test_mood_logging_is_daily_unique_and_low_streak_raises_red_flag(): void
+    public function test_mood_logging_keeps_every_entry_and_low_streak_raises_red_flag(): void
     {
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
 
         $this->postJson('/api/v1/mood', ['score' => 7])->assertCreated();
-        // Second post the same day updates instead of duplicating.
-        $this->postJson('/api/v1/mood', ['score' => 2])->assertOk();
-        $this->assertSame(1, $this->patient->moodLogs()->count());
+        // A second post the same day is a new entry, not an overwrite.
+        $this->travelTo(now()->addSecond());
+        $this->postJson('/api/v1/mood', ['score' => 2])->assertCreated();
+        $this->assertSame(2, $this->patient->moodLogs()->count());
 
         $this->postJson('/api/v1/mood', ['score' => 11])->assertStatus(422);
         $this->postJson('/api/v1/mood', ['score' => 5, 'log_date' => now()->addDay()->toDateString()])->assertStatus(422);
@@ -309,7 +310,7 @@ class Weeks1To7HardeningTest extends TestCase
         // Out-of-range axes rejected; score-only still accepted (backward compat).
         $this->postJson('/api/v1/mood', ['score' => 6, 'anxiety' => 11])->assertStatus(422);
         $this->postJson('/api/v1/mood', ['score' => 6, 'sleep_hours' => 30])->assertStatus(422);
-        $this->postJson('/api/v1/mood', ['score' => 8])->assertOk();
+        $this->postJson('/api/v1/mood', ['score' => 8])->assertCreated();
         $this->postJson('/api/v1/mood', [
             'score' => 5, 'anxiety' => 6, 'sleep_hours' => 6.5,
             'log_date' => now()->subDay()->toDateString(),
@@ -319,7 +320,9 @@ class Weeks1To7HardeningTest extends TestCase
         $yesterday = $chart['series'][count($chart['series']) - 2];
         $this->assertSame(6, $yesterday['anxiety']);
         $this->assertSame(6.5, $yesterday['sleep_hours']);
-        $this->assertSame(6.5, $chart['summary']['average_sleep_hours']);
+        // Both sleep entries (7.5 today, 6.5 yesterday) count; the score-only
+        // entry today does not replace the earlier one.
+        $this->assertEqualsWithDelta(7.0, $chart['summary']['average_sleep_hours'], 0.001);
     }
 
     public function test_low_mood_streak_requires_consecutive_calendar_days_and_strict_integers(): void
