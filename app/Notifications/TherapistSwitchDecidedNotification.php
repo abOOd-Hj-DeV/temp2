@@ -29,6 +29,7 @@ class TherapistSwitchDecidedNotification extends Notification
             'therapist_decision' => $this->switch->therapist_decision,
             'old_therapist_id' => $this->switch->old_therapist_id,
             'new_therapist_id' => $this->switch->new_therapist_id,
+            'cancelled_session_ids' => $this->switch->cancelled_session_ids ?? [],
         ];
     }
 }

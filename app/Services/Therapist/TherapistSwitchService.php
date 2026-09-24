@@ -27,8 +27,10 @@ use Illuminate\Validation\ValidationException;
  * Patient-initiated therapist change. The requested therapist accepts or
  * declines first, then the Head Master (clinical supervisor/admin) gives the
  * final decision; on approval the patient is re-assigned and the new therapist's capacity
- * is re-checked under a row lock. Existing sessions with the previous
- * therapist are left untouched (they can be cancelled independently).
+ * is re-checked under a row lock. Open (pending/confirmed) sessions with
+ * the previous therapist are cancelled in the same transaction; because
+ * package capacity is counted from non-cancelled sessions, those slots
+ * return to the package balance exactly once.
  */
 class TherapistSwitchService
 {
@@ -210,6 +212,8 @@ class TherapistSwitchService
                 throw ValidationException::withMessages(['switch' => 'The requested therapist has not accepted this patient yet.']);
             }
 
+            $cancelledSessionIds = [];
+
             if ($approve) {
                 $target = Therapist::whereKey($locked->new_therapist_id)->lockForUpdate()->firstOrFail();
 
@@ -228,6 +232,8 @@ class TherapistSwitchService
 
                 Patient::whereKey($locked->patient_id)->lockForUpdate()->firstOrFail();
                 Patient::whereKey($locked->patient_id)->update(['therapist_id' => $target->user_id]);
+
+                $cancelledSessionIds = $this->cancelOpenSessionsWithPreviousTherapist($locked, $admin);
 
                 // The package follows the patient: sessions delivered so far stay
                 // credited to the previous therapist, the remainder to the new one.
@@ -250,10 +256,12 @@ class TherapistSwitchService
                 'status' => $approve ? 'approved' : 'rejected',
                 'decided_by' => $admin->id,
                 'decided_at' => now(),
+                'cancelled_session_ids' => $approve ? $cancelledSessionIds : null,
             ]);
 
             $this->audit->record($admin, AuditLogService::THERAPIST_SWITCH_DECIDED, $locked->id, [
                 'approved' => $approve, 'note' => $note,
+                'cancelled_sessions' => $approve ? count($cancelledSessionIds) : 0,
             ]);
 
             return $locked->refresh();
@@ -262,6 +270,56 @@ class TherapistSwitchService
         $this->notifications->deliver('therapistSwitchDecided', $switch);
 
         return $switch;
+    }
+
+    /**
+     * Cancel every pending/confirmed session the patient still holds with the
+     * previous therapist. Completed sessions stay credited to that therapist
+     * and cancelled ones are never touched again, so re-running is a no-op.
+     *
+     * @return list<string>
+     */
+    private function cancelOpenSessionsWithPreviousTherapist(TherapistSwitch $switch, User $admin): array
+    {
+        if ($switch->old_therapist_id === null) {
+            return [];
+        }
+
+        $open = TherapySession::where('patient_id', $switch->patient_id)
+            ->where('therapist_id', $switch->old_therapist_id)
+            ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($open as $session) {
+            $from = $session->status;
+
+            $session->update([
+                'status' => SessionStatus::CANCELLED->value,
+                'cancel_rejected' => false,
+                'reschedule_date' => null,
+                'reschedule_time' => null,
+                'reschedule_requested_by' => null,
+                'reschedule_requested_at' => null,
+                'cancel_requested_by' => null,
+                'cancel_requested_at' => null,
+            ]);
+
+            $session->statusLogs()->create([
+                'from_status' => $from->value,
+                'to_status' => SessionStatus::CANCELLED->value,
+                'actor_id' => $admin->id,
+            ]);
+
+            $this->audit->record($admin, AuditLogService::SESSION_TRANSITIONED, $session->id, [
+                'from' => $from->value,
+                'to' => SessionStatus::CANCELLED->value,
+                'reason' => 'therapist_switch_approved',
+                'switch_id' => $switch->id,
+            ]);
+        }
+
+        return $open->pluck('id')->values()->all();
     }
 
     /** Distinct patients who are assigned to the therapist or hold a live session with them. */
@@ -297,6 +355,7 @@ class TherapistSwitchService
             'therapist_decided_at' => $switch->therapist_decided_at?->toISOString(),
             'decided_at' => $switch->decided_at?->toISOString(),
             'requested_at' => $switch->timestamp?->toISOString(),
+            'cancelled_session_ids' => $switch->cancelled_session_ids ?? [],
         ];
     }
 }
