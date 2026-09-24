@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\DB;
 use LogicException;
 use Tests\TestCase;
 
-/** I-22 / ADM-08: audit log is append-only at both ORM and database level. */
+/** I-22 / ADM-08: audit log is append-only at ORM and database level, and survives actor deletion. */
 class AuditLogAppendOnlyTest extends TestCase
 {
     use RefreshDatabase;
@@ -57,28 +57,23 @@ class AuditLogAppendOnlyTest extends TestCase
         app(AuditLogService::class)->record($this->user, 'test.event', $this->user->id);
         $id = AuditLog::firstOrFail()->id;
 
-        try {
-            DB::table('audit_logs')->where('id', $id)->update(['action' => 'tampered']);
-            $this->fail('raw update should be rejected');
-        } catch (QueryException $e) {
-            $this->assertStringContainsString('append-only', $e->getMessage());
-        }
-
-        try {
-            DB::table('audit_logs')->where('id', $id)->delete();
-            $this->fail('raw delete should be rejected');
-        } catch (QueryException $e) {
-            $this->assertStringContainsString('append-only', $e->getMessage());
-        }
-
-        try {
-            DB::table('audit_logs')->delete();
-            $this->fail('bulk delete should be rejected');
-        } catch (QueryException) {
-        }
+        $this->assertRejectedByDatabase(fn () => DB::table('audit_logs')->where('id', $id)->update(['action' => 'tampered']));
+        $this->assertRejectedByDatabase(fn () => DB::table('audit_logs')->where('id', $id)->delete());
+        $this->assertRejectedByDatabase(fn () => DB::table('audit_logs')->delete());
 
         $this->assertDatabaseHas('audit_logs', ['id' => $id, 'action' => 'test.event']);
         $this->assertDatabaseCount('audit_logs', 1);
+    }
+
+    /** Runs in a savepoint so the outer test transaction stays usable on PostgreSQL. */
+    private function assertRejectedByDatabase(callable $statement): void
+    {
+        try {
+            DB::transaction(fn () => $statement());
+            $this->fail('statement should be rejected by the database');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('append-only', $e->getMessage());
+        }
     }
 
     public function test_audit_rows_survive_actor_hard_delete(): void

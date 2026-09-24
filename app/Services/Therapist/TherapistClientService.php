@@ -58,8 +58,8 @@ class TherapistClientService
                     ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
                     ->whereDate('session_date', '>=', now()->toDateString()),
             ])
-            ->when($search, fn (Builder $q) => $q->where(
-                'full_name', 'like', '%'.str_replace(['%', '_'], ['\\%', '\\_'], $search).'%',
+            ->when($search, fn (Builder $q) => $q->whereLike(
+                'full_name', '%'.str_replace(['%', '_'], ['\\%', '\\_'], $search).'%', caseSensitive: false,
             ))
             ->when($status === 'active', fn (Builder $q) => $q->where('therapist_id', $tid))
             ->when($status === 'past', fn (Builder $q) => $q->where(

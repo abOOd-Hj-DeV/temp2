@@ -37,7 +37,7 @@ class TherapistContentService
             ->when($contentType, fn ($q) => $q->where('content_type', $contentType))
             ->when($search, fn ($q) => $q->where(function ($w) use ($search) {
                 $like = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $search).'%';
-                $w->where('title', 'like', $like)->orWhere('body', 'like', $like);
+                $w->whereLike('title', $like, caseSensitive: false)->orWhereLike('body', $like, caseSensitive: false);
             }))
             ->with('assignedPatients:user_id,full_name')
             ->orderByDesc('created_at')
