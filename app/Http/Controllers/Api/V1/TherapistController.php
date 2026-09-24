@@ -13,6 +13,7 @@ use App\Services\Therapist\TherapistService;
 use App\Services\Wallet\WalletService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class TherapistController extends Controller
@@ -151,10 +152,23 @@ class TherapistController extends Controller
 
     public function clients(Request $request): JsonResponse
     {
-        $paginator = $this->clients->list($this->therapistOf($request), $this->perPage($request));
+        $filters = $request->validate([
+            'search' => 'nullable|string|max:100',
+            'status' => ['nullable', Rule::in(TherapistClientService::STATUSES)],
+            'sort' => ['nullable', Rule::in(TherapistClientService::SORTS)],
+        ]);
+        $therapist = $this->therapistOf($request);
+
+        $paginator = $this->clients->list(
+            $therapist,
+            $this->perPage($request),
+            $filters['search'] ?? null,
+            $filters['status'] ?? null,
+            $filters['sort'] ?? 'name',
+        );
 
         return response()->json([
-            'data' => collect($paginator->items())->map(fn ($p) => $this->clients->clientToArray($p)),
+            'data' => collect($paginator->items())->map(fn ($p) => $this->clients->clientToArray($p, $therapist)),
             'pagination' => [
                 'current_page' => $paginator->currentPage(),
                 'last_page' => $paginator->lastPage(),
