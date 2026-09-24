@@ -128,7 +128,7 @@ class Weeks1To7HardeningTest extends TestCase
     {
         $this->postJson('/api/v1/auth/register', [
             'name' => 'Alias User', 'email' => 'alias@example.com', 'whatsapp_number' => '00963 911 111 111',
-            'password' => 'Secret123!', 'password_confirmation' => 'Secret123!', 'role' => 'patient',
+            'password' => 'Secret123!', 'password_confirmation' => 'Secret123!', 'role' => 'patient', 'privacy_accepted' => true,
         ])->assertCreated();
 
         $this->assertDatabaseHas('users', ['whatsapp_number' => '+963911111111']);
@@ -136,7 +136,7 @@ class Weeks1To7HardeningTest extends TestCase
         // Same number in a different format is treated as the same account.
         $this->postJson('/api/v1/auth/register', [
             'name' => 'Dup', 'email' => 'dup@example.com', 'whatsapp_number' => '+963-911-111-111',
-            'password' => 'Secret123!', 'password_confirmation' => 'Secret123!', 'role' => 'patient',
+            'password' => 'Secret123!', 'password_confirmation' => 'Secret123!', 'role' => 'patient', 'privacy_accepted' => true,
         ])->assertStatus(422);
 
         // Cooldown applies to the canonical number regardless of formatting; the

@@ -78,6 +78,8 @@ class AuthService
                 'is_active' => false,
                 'phone_verified_at' => null,
                 'login_attempts' => 0,
+                'privacy_policy_version' => self::privacyPolicyVersion(),
+                'privacy_accepted_at' => now(),
             ]);
 
             $user->assignRole(UserRole::PATIENT->value);
@@ -115,6 +117,8 @@ class AuthService
                     'name' => $data['name'],
                     'email' => $data['email'],
                     'password' => Hash::make($data['password']),
+                    'privacy_policy_version' => self::privacyPolicyVersion(),
+                    'privacy_accepted_at' => now(),
                 ]);
 
                 return $user->refresh();
@@ -320,6 +324,49 @@ class AuthService
         }
 
         return ['message' => __('Logged out successfully.')];
+    }
+
+    public static function privacyPolicyVersion(): string
+    {
+        return (string) config('sakina.privacy_policy.version', 'unversioned');
+    }
+
+    /**
+     * Authenticated password change. Every other device is signed out; the
+     * caller keeps its current access token.
+     */
+    public function changePassword(User $user, string $currentPassword, string $newPassword): array
+    {
+        if (! Hash::check($currentPassword, $user->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => __('The current password is incorrect.'),
+            ]);
+        }
+
+        if (Hash::check($newPassword, $user->password)) {
+            throw ValidationException::withMessages([
+                'password' => __('The new password must differ from the current one.'),
+            ]);
+        }
+
+        $current = $user->currentAccessToken();
+        $currentId = $current instanceof PersonalAccessToken ? $current->getKey() : null;
+
+        DB::transaction(function () use ($user, $newPassword, $currentId) {
+            $this->users->update($user, [
+                'password' => Hash::make($newPassword),
+                'password_changed_at' => now(),
+            ]);
+
+            $user->tokens()->when($currentId !== null, fn ($q) => $q->whereKeyNot($currentId))->delete();
+            $user->refreshTokens()->whereNull('revoked_at')
+                ->when($currentId !== null, fn ($q) => $q->where('access_token_id', '!=', $currentId))
+                ->update(['revoked_at' => now()]);
+
+            $this->audit->record($user, AuditLogService::PASSWORD_CHANGED, $user->id);
+        });
+
+        return ['message' => __('Password changed. Other devices have been signed out.')];
     }
 
     public function logoutAll(User $user): array
