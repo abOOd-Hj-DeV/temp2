@@ -6,6 +6,7 @@ use App\Enums\ApprovalStatus;
 use App\Enums\SessionStatus;
 use App\Exceptions\ConflictException;
 use App\Models\Therapist;
+use App\Models\TherapistBlockedPeriod;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\SessionRepositoryInterface;
@@ -95,7 +96,8 @@ class TherapistService
     /**
      * Availability windows are wall-clock hours in the therapist's own zone;
      * they are expanded per local day, converted to UTC instants and then
-     * filtered to [$from, $to), the past, and overlaps with booked sessions.
+     * filtered to [$from, $to), the past, blocked periods (vacations) and
+     * overlaps with booked sessions.
      *
      * @return array<int, Carbon> sorted UTC instants
      */
@@ -109,11 +111,15 @@ class TherapistService
 
         $day = $from->copy()->setTimezone($tz)->startOfDay();
         $lastDay = $to->copy()->setTimezone($tz)->startOfDay();
+        $blocked = TherapistBlockedPeriod::where('therapist_id', $therapist->user_id)
+            ->whereDate('end_date', '>=', $day->toDateString())
+            ->whereDate('start_date', '<=', $lastDay->toDateString())
+            ->get();
 
         for (; $day->lte($lastDay); $day->addDay()) {
             $windows = $therapist->availability[strtolower($day->format('l'))] ?? [];
 
-            if (! is_array($windows)) {
+            if (! is_array($windows) || $blocked->contains(fn (TherapistBlockedPeriod $p) => $p->coversDate($day->toDateString()))) {
                 continue;
             }
 

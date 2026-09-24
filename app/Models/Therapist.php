@@ -64,6 +64,11 @@ class Therapist extends Model
         return $this->hasMany(TherapistClientNote::class, 'therapist_id', 'user_id');
     }
 
+    public function blockedPeriods(): HasMany
+    {
+        return $this->hasMany(TherapistBlockedPeriod::class, 'therapist_id', 'user_id');
+    }
+
     public function sessions(): HasMany
     {
         return $this->hasMany(TherapySession::class, 'therapist_id', 'user_id');

@@ -19,6 +19,10 @@ class AuditLogService
 
     public const THERAPIST_LIMIT_CHANGED = 'therapist.limit_changed';
 
+    public const THERAPIST_BLOCKED_PERIOD_CREATED = 'therapist.blocked_period_created';
+
+    public const THERAPIST_BLOCKED_PERIOD_DELETED = 'therapist.blocked_period_deleted';
+
     public const SESSION_BOOKED = 'session.booked';
 
     public const SESSION_TRANSITIONED = 'session.transitioned';

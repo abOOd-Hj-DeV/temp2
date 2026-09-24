@@ -2,6 +2,7 @@
 
 use App\Enums\UserRole;
 use App\Http\Controllers\Api\V1\ParallelLayerController;
+use App\Http\Controllers\Api\V1\TherapistBlockedPeriodController;
 use App\Http\Controllers\Api\V1\TherapistContentController;
 use App\Http\Controllers\Api\V1\TherapistController;
 use App\Http\Controllers\Api\V1\TherapistDocumentController;
@@ -70,6 +71,10 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
             Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware(['throttle:5,1', 'idempotent']);
             Route::get('/reports', [TherapistController::class, 'reports']);
             Route::get('/me/reviews', [TherapistReviewController::class, 'own']);
+
+            Route::get('/me/blocked-periods', [TherapistBlockedPeriodController::class, 'index']);
+            Route::post('/me/blocked-periods', [TherapistBlockedPeriodController::class, 'store'])->middleware('idempotent');
+            Route::delete('/me/blocked-periods/{id}', [TherapistBlockedPeriodController::class, 'destroy'])->whereUuid('id');
             // Step 1 of a patient's therapist switch: the requested therapist answers.
             Route::get('/me/switch-requests', [TherapistSwitchController::class, 'incoming']);
             Route::post('/me/switch-requests/{switch}/decide', [TherapistSwitchController::class, 'therapistDecide'])
