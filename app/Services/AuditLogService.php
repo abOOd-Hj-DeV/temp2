@@ -129,6 +129,14 @@ class AuditLogService
 
     public const REVIEW_UPDATED = 'review.updated';
 
+    public const DOCUMENT_REQUESTED = 'document.requested';
+
+    public const DOCUMENT_SUBMITTED = 'document.submitted';
+
+    public const DOCUMENT_APPROVED = 'document.approved';
+
+    public const DOCUMENT_REJECTED = 'document.rejected';
+
     /** Every action name declared on this class, for filter validation. */
     public static function actions(): array
     {

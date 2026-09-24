@@ -4,6 +4,7 @@ use App\Enums\UserRole;
 use App\Http\Controllers\Api\V1\ParallelLayerController;
 use App\Http\Controllers\Api\V1\TherapistContentController;
 use App\Http\Controllers\Api\V1\TherapistController;
+use App\Http\Controllers\Api\V1\TherapistDocumentController;
 use App\Http\Controllers\Api\V1\TherapistModuleController;
 use App\Http\Controllers\Api\V1\TherapistReviewController;
 use App\Http\Controllers\Api\V1\TherapistSwitchController;
@@ -31,6 +32,12 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
         Route::post('/settings', [TherapistController::class, 'updateSettings']);
         Route::post('/me/approval', [TherapistController::class, 'submitApproval'])->middleware('throttle:5,1');
         Route::post('/approval', [TherapistController::class, 'submitApproval'])->middleware('throttle:5,1');
+
+        // Documents staff asked for: allowed before approval (licences etc.).
+        Route::get('/me/documents', [TherapistDocumentController::class, 'index']);
+        Route::get('/me/documents/{id}', [TherapistDocumentController::class, 'show'])->whereUuid('id');
+        Route::post('/me/documents/{id}/upload', [TherapistDocumentController::class, 'upload'])
+            ->whereUuid('id')->middleware('throttle:20,1');
 
         // Operational: approved therapists only.
         Route::middleware('therapist.approved')->group(function () {

@@ -2,6 +2,7 @@
 
 use App\Enums\UserRole;
 use App\Http\Controllers\Api\V1\Admin\AuditLogController;
+use App\Http\Controllers\Api\V1\Admin\DocumentRequestController;
 use App\Http\Controllers\Api\V1\Admin\FaqManagementController;
 use App\Http\Controllers\Api\V1\Admin\NotificationLogController;
 use App\Http\Controllers\Api\V1\Admin\OverviewController;
@@ -78,6 +79,11 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
         Route::put('/therapists/{id}/clients-limit', [TherapistApprovalController::class, 'updateLimit'])
             ->whereUuid('id');
 
+        Route::get('/documents', [DocumentRequestController::class, 'index']);
+        Route::post('/documents', [DocumentRequestController::class, 'store'])->middleware('idempotent');
+        Route::get('/documents/{id}', [DocumentRequestController::class, 'show'])->whereUuid('id');
+        Route::post('/documents/{id}/review', [DocumentRequestController::class, 'review'])
+            ->whereUuid('id')->middleware('idempotent');
     });
 
     // Staff/therapist accounts: the clinical supervisor may only create and

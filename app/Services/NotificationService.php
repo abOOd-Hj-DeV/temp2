@@ -8,6 +8,7 @@ use App\Enums\SessionStatus;
 use App\Enums\UserRole;
 use App\Jobs\RetryNotificationJob;
 use App\Models\Assessment;
+use App\Models\DocumentRequest;
 use App\Models\Message;
 use App\Models\Patient;
 use App\Models\Payment;
@@ -18,6 +19,7 @@ use App\Models\TherapySession;
 use App\Models\User;
 use App\Notifications\AssessmentCompletedNotification;
 use App\Notifications\ChatMessageReceivedNotification;
+use App\Notifications\DocumentRequestNotification;
 use App\Notifications\PaymentProofPendingNotification;
 use App\Notifications\PaymentReviewedNotification;
 use App\Notifications\PaymentReviewOverdueNotification;
@@ -371,6 +373,28 @@ class NotificationService
         foreach ($supervisors as $supervisor) {
             $this->notifyOnce($supervisor, new TherapistSwitchDecidedNotification($switch), "therapist_switch.awaiting_supervisor:{$switch->id}");
         }
+    }
+
+    /** Staff asked a user for a document. */
+    public function documentRequested(DocumentRequest $request): void
+    {
+        $this->notifyOnce($request->user, new DocumentRequestNotification($request, 'document_requested'), "document_request.requested:{$request->id}");
+    }
+
+    /** The user uploaded the document; the requesting staff member is told. */
+    public function documentSubmitted(DocumentRequest $request): void
+    {
+        $key = "document_request.submitted:{$request->id}:".($request->submitted_at?->timestamp ?? 0);
+
+        $this->notifyOnce($request->requester, new DocumentRequestNotification($request, 'document_submitted'), $key);
+    }
+
+    /** Staff approved or rejected the document. */
+    public function documentReviewed(DocumentRequest $request): void
+    {
+        $key = "document_request.reviewed:{$request->id}:{$request->status}:".($request->reviewed_at?->timestamp ?? 0);
+
+        $this->notifyOnce($request->user, new DocumentRequestNotification($request, 'document_reviewed'), $key);
     }
 
     /**
