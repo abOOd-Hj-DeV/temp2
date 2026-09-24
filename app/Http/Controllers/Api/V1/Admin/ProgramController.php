@@ -92,10 +92,14 @@ class ProgramController extends Controller
             'title' => "{$required}|string|max:160",
             'description' => "{$required}|string|max:10000",
             'content_type' => "{$required}|in:text,video",
+            'body' => 'sometimes|nullable|string|max:100000',
+            'media_url' => 'sometimes|nullable|url|max:2000',
             'exercise' => 'sometimes|nullable|string|max:10000',
+            'homework_prompt' => 'sometimes|nullable|string|max:10000',
             'tracking_tools' => 'sometimes|nullable|array|max:20',
             'tracking_tools.*' => 'string|max:80',
             'order' => 'sometimes|integer|min:0|max:1000',
+            'is_hideable' => 'sometimes|boolean',
         ];
     }
 

@@ -4,6 +4,7 @@ use App\Enums\UserRole;
 use App\Http\Controllers\Api\V1\ParallelLayerController;
 use App\Http\Controllers\Api\V1\TherapistContentController;
 use App\Http\Controllers\Api\V1\TherapistController;
+use App\Http\Controllers\Api\V1\TherapistModuleController;
 use App\Http\Controllers\Api\V1\TherapistSwitchController;
 use Illuminate\Support\Facades\Route;
 
@@ -37,6 +38,12 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
             Route::get('/content/{id}', [TherapistContentController::class, 'show'])->whereUuid('id');
             Route::put('/content/{id}', [TherapistContentController::class, 'update'])->whereUuid('id');
             Route::delete('/content/{id}', [TherapistContentController::class, 'destroy'])->whereUuid('id');
+
+            Route::get('/clients/{id}/modules', [TherapistModuleController::class, 'progress'])->whereUuid('id');
+            Route::post('/clients/{id}/modules/{module}/hide', [TherapistModuleController::class, 'hide'])
+                ->whereUuid(['id', 'module']);
+            Route::delete('/clients/{id}/modules/{module}/hide', [TherapistModuleController::class, 'unhide'])
+                ->whereUuid(['id', 'module']);
 
             Route::get('/clients/{id}/parallel', [ParallelLayerController::class, 'show'])->whereUuid('id');
             Route::post('/clients/{id}/parallel', [ParallelLayerController::class, 'store'])

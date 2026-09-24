@@ -26,6 +26,8 @@ Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value])
             ->whereUuid('module')->name('modules.show');
         Route::post('/modules/{module}/complete', [PatientController::class, 'completeModule'])
             ->whereUuid('module')->name('modules.complete');
+        Route::put('/modules/{module}/homework', [PatientController::class, 'submitHomework'])
+            ->whereUuid('module')->name('modules.homework');
         Route::delete('/account', [PatientController::class, 'deleteAccount'])->name('account.delete');
         Route::get('/export-data', [PatientController::class, 'exportData'])->middleware('throttle:export')->name('data.export');
 

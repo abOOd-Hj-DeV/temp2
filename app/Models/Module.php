@@ -16,11 +16,13 @@ class Module extends Model
 
     protected $fillable = [
         'id', 'program_id', 'title', 'description',
-        'content_type', 'exercise', 'tracking_tools', 'order',
+        'content_type', 'body', 'media_url', 'exercise', 'homework_prompt',
+        'tracking_tools', 'order', 'is_hideable',
     ];
 
     protected $casts = [
         'tracking_tools' => 'array',
+        'is_hideable' => 'boolean',
     ];
 
     /**

@@ -72,7 +72,25 @@ class PatientController extends Controller
 
     public function completeModule(Request $request, string $module): JsonResponse
     {
-        return response()->json($this->dashboard->completeModule($request->user(), $module));
+        $data = $request->validate(self::homeworkRules(false));
+
+        return response()->json($this->dashboard->completeModule($request->user(), $module, $data['homework'] ?? null));
+    }
+
+    public function submitHomework(Request $request, string $module): JsonResponse
+    {
+        $data = $request->validate(self::homeworkRules(true));
+
+        return response()->json($this->dashboard->submitHomework($request->user(), $module, $data['homework']));
+    }
+
+    /** @return array<string, string> */
+    private static function homeworkRules(bool $required): array
+    {
+        return [
+            'homework' => ($required ? 'required' : 'sometimes').'|array|min:1|max:50',
+            'homework.*' => 'nullable|string|max:5000',
+        ];
     }
 
     public function getEmergency(Request $request): JsonResponse

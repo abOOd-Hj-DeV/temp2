@@ -97,6 +97,10 @@ class AuditLogService
 
     public const MODULE_DELETED = 'module.deleted';
 
+    public const MODULE_HIDDEN = 'module.hidden_for_patient';
+
+    public const MODULE_UNHIDDEN = 'module.unhidden_for_patient';
+
     public const STAFF_ACCOUNT_CREATED = 'staff.account_created';
 
     public const STAFF_INVITATION_RESENT = 'staff.invitation_resent';

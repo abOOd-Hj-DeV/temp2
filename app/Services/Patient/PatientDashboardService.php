@@ -14,9 +14,11 @@ use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
+use App\Services\Program\ModuleAccessService;
 use App\Services\RedFlagService;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
@@ -29,6 +31,7 @@ class PatientDashboardService
         private PatientRepositoryInterface $patients,
         private AssessmentRepositoryInterface $assessments,
         private RedFlagService $redFlags,
+        private ModuleAccessService $moduleAccess,
     ) {}
 
     public function dashboard(User $user): array
@@ -127,19 +130,27 @@ class PatientDashboardService
 
     public function programs(User $user): array
     {
-        $this->requireProfile($user);
+        $patient = $this->requireProfile($user);
+        $subscribed = $this->moduleAccess->hasActiveSubscription($patient);
 
         return [
-            'programs' => Program::with(['modules' => fn ($q) => $q->orderBy('order')])
-                ->orderBy('is_core', 'desc')
+            'has_active_subscription' => $subscribed,
+            'programs' => Program::orderBy('is_core', 'desc')
                 ->get()
-                ->map(fn (Program $p) => [
-                    'id' => $p->id,
-                    'name' => $p->name,
-                    'description' => $p->description,
-                    'is_core' => (bool) $p->is_core,
-                    'modules_count' => $p->modules->count(),
-                ])
+                ->map(function (Program $p) use ($patient) {
+                    $state = $this->moduleAccess->programState($patient, $p->id)
+                        ->reject(fn (array $row) => $row['lock_reason'] === ModuleAccessService::REASON_HIDDEN);
+
+                    return [
+                        'id' => $p->id,
+                        'name' => $p->name,
+                        'description' => $p->description,
+                        'is_core' => (bool) $p->is_core,
+                        'modules_count' => $state->count(),
+                        'completed_count' => $state->filter(fn (array $row) => $row['progress']?->status === 'completed')->count(),
+                        'modules' => $state->map(fn (array $row) => $this->moduleSummary($row))->values()->all(),
+                    ];
+                })
                 ->all(),
         ];
     }
@@ -147,55 +158,126 @@ class PatientDashboardService
     public function moduleDetail(User $user, string $moduleId): array
     {
         $patient = $this->requireProfile($user);
-
-        $module = Module::with('program:id,name,is_core')->find($moduleId);
-        if (! $module) {
-            throw new NotFoundHttpException('Module not found.');
-        }
-
-        $progress = PatientModule::where('patient_id', $patient->user_id)
-            ->where('module_id', $module->id)
-            ->first();
+        $module = $this->findModule($moduleId);
+        $state = $this->requireUnlocked($patient, $module);
 
         return [
-            'module' => $this->moduleToArray($module, $progress),
+            'module' => $this->moduleToArray($state),
         ];
     }
 
-    public function completeModule(User $user, string $moduleId): array
+    /**
+     * Marks a module done, optionally recording the homework answers in the
+     * same request. Locked modules cannot be completed: the first module is
+     * free, the rest need an active package and the previous module finished.
+     */
+    public function completeModule(User $user, string $moduleId, ?array $homework = null): array
     {
         $patient = $this->requireProfile($user);
-
-        $module = Module::find($moduleId);
-        if (! $module) {
-            throw new NotFoundHttpException('Module not found.');
-        }
+        $module = $this->findModule($moduleId);
+        $this->requireUnlocked($patient, $module);
 
         $progress = PatientModule::firstOrCreate(
             ['patient_id' => $patient->user_id, 'module_id' => $module->id],
             ['id' => (string) Str::uuid(), 'status' => 'pending'],
         );
+
+        if ($homework !== null) {
+            $progress->fill(['homework' => $homework, 'homework_submitted_at' => now()])->save();
+        }
+
         $progress->markAsCompleted();
 
         return [
-            'module' => $this->moduleToArray($module, $progress->refresh()),
+            'module' => $this->moduleToArray($this->moduleAccess->stateFor($patient, $module)),
         ];
     }
 
-    private function moduleToArray(Module $module, ?PatientModule $progress): array
+    /** Saves (or replaces) the patient's answers to the module's homework without completing it. */
+    public function submitHomework(User $user, string $moduleId, array $answers): array
     {
+        $patient = $this->requireProfile($user);
+        $module = $this->findModule($moduleId);
+        $this->requireUnlocked($patient, $module);
+
+        $progress = PatientModule::firstOrCreate(
+            ['patient_id' => $patient->user_id, 'module_id' => $module->id],
+            ['id' => (string) Str::uuid(), 'status' => 'pending'],
+        );
+        $progress->fill(['homework' => $answers, 'homework_submitted_at' => now()])->save();
+
+        return [
+            'module' => $this->moduleToArray($this->moduleAccess->stateFor($patient, $module)),
+        ];
+    }
+
+    private function findModule(string $moduleId): Module
+    {
+        $module = Module::with('program:id,name,is_core')->find($moduleId);
+        if (! $module) {
+            throw new NotFoundHttpException('Module not found.');
+        }
+
+        return $module;
+    }
+
+    private function requireUnlocked(Patient $patient, Module $module): array
+    {
+        $state = $this->moduleAccess->stateFor($patient, $module);
+
+        if ($state['lock_reason'] === ModuleAccessService::REASON_HIDDEN) {
+            throw new NotFoundHttpException('Module not found.');
+        }
+
+        if ($state['locked']) {
+            throw new AccessDeniedHttpException(match ($state['lock_reason']) {
+                ModuleAccessService::REASON_SUBSCRIPTION => __('An active package is required to open this module.'),
+                default => __('Complete the previous module first.'),
+            });
+        }
+
+        return $state;
+    }
+
+    private function moduleSummary(array $state): array
+    {
+        /** @var Module $module */
+        $module = $state['module'];
+        /** @var ?PatientModule $progress */
+        $progress = $state['progress'];
+
         return [
             'id' => $module->id,
-            'program_id' => $module->program_id,
-            'program_name' => $module->program?->name,
             'title' => $module->title,
-            'description' => $module->description,
             'content_type' => $module->content_type,
-            'exercise' => $module->exercise,
-            'tracking_tools' => $module->tracking_tools,
             'order' => $module->order,
+            'is_free' => $state['is_free'],
+            'locked' => $state['locked'],
+            'lock_reason' => $state['lock_reason'],
+            'has_homework' => $module->homework_prompt !== null,
             'status' => $progress?->status ?? 'pending',
             'completed_at' => $progress?->completed_at?->toIso8601String(),
+        ];
+    }
+
+    private function moduleToArray(array $state): array
+    {
+        /** @var Module $module */
+        $module = $state['module'];
+        /** @var ?PatientModule $progress */
+        $progress = $state['progress'];
+
+        return $this->moduleSummary($state) + [
+            'program_id' => $module->program_id,
+            'program_name' => $module->program?->name,
+            'description' => $module->description,
+            'body' => $module->body,
+            'media_url' => $module->media_url,
+            'exercise' => $module->exercise,
+            'homework_prompt' => $module->homework_prompt,
+            'tracking_tools' => $module->tracking_tools,
+            'homework' => $progress?->homework,
+            'homework_submitted_at' => $progress?->homework_submitted_at?->toIso8601String(),
         ];
     }
 
