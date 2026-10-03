@@ -35,9 +35,8 @@ use App\Notifications\SupportReplyNotification;
 use App\Notifications\TherapistApprovalNotification;
 use App\Notifications\TherapistSwitchDecidedNotification;
 use App\Services\Notifications\NotificationDispatcher;
-use App\Support\DurableQueue;
+use App\Services\Notifications\NotificationOutboxService;
 use App\Support\SessionClock;
-use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Facades\Log;
 
@@ -47,44 +46,23 @@ use Illuminate\Support\Facades\Log;
  * and payment events. Channel delivery and the delivery ledger live in
  * NotificationDispatcher.
  *
- * Delivery is idempotent per (event, recipient): the WhatsApp message is
- * only queued the first time the event is recorded for that recipient.
+ * Delivery is idempotent independently per channel and recipient.
  */
 class NotificationService
 {
     public function __construct(private NotificationDispatcher $dispatcher) {}
 
     /**
-     * Run a notification method for a write that has already been committed.
-     * A failure never reaches the caller: it is reported and retried in the
-     * background until it succeeds (delivery is idempotent per recipient).
+     * Stage delivery in the current transaction, then attempt it after commit.
+     * Delivery failures remain retryable; inability to persist work propagates.
      */
     public function deliver(string $method, mixed ...$args): void
     {
-        try {
-            $this->{$method}(...$args);
-        } catch (\Throwable $e) {
-            report($e);
-            Log::error('Notification failed after commit; scheduled for retry', [
-                'method' => $method,
-                'error' => $e->getMessage(),
-            ]);
-
-            try {
-                $job = (new RetryNotificationJob($method, $args))->delay(now()->addMinute());
-
-                if (DurableQueue::isSyncDefault() && ($fallback = DurableQueue::fallbackConnection()) !== null) {
-                    $job->onConnection($fallback);
-                }
-
-                app(Dispatcher::class)->dispatch($job);
-            } catch (\Throwable $queueError) {
-                Log::critical('Notification retry could not be queued', [
-                    'method' => $method,
-                    'error' => $queueError->getMessage(),
-                ]);
-            }
+        if (! method_exists($this, $method) || in_array($method, ['deliver', 'notifyOnce', '__construct'], true)) {
+            throw new \InvalidArgumentException('Unknown notification event.');
         }
+
+        app(NotificationOutboxService::class)->stage(new RetryNotificationJob($method, $args), inline: true);
     }
 
     public function assessmentCompleted(Patient $patient, Assessment $assessment): void
@@ -111,9 +89,7 @@ class NotificationService
         $key = "red_flag.raised:{$redFlag->id}";
 
         foreach ($recipients as $recipient) {
-            if (! $this->notifyOnce($recipient, new RedFlagRaisedNotification($redFlag), $key)) {
-                continue;
-            }
+            $this->notifyOnce($recipient, new RedFlagRaisedNotification($redFlag), $key);
 
             // Message carries no patient identity: it goes through a third-party provider.
             $this->dispatcher->whatsApp(
@@ -143,9 +119,7 @@ class NotificationService
         $key = "red_flag.priority_raised:{$redFlag->id}:{$redFlag->priority->value}";
 
         foreach ($recipients as $recipient) {
-            if (! $this->notifyOnce($recipient, new RedFlagRaisedNotification($redFlag, 'red_flag_priority_raised'), $key)) {
-                continue;
-            }
+            $this->notifyOnce($recipient, new RedFlagRaisedNotification($redFlag, 'red_flag_priority_raised'), $key);
 
             $this->dispatcher->whatsApp(
                 $recipient,
@@ -191,11 +165,9 @@ class NotificationService
         $key = "red_flag.escalated:{$redFlag->id}";
 
         foreach ($staff as $user) {
-            if (! $this->notifyOnce($user, new RedFlagEscalatedNotification($redFlag), $key)) {
-                continue;
+            if ($this->notifyOnce($user, new RedFlagEscalatedNotification($redFlag), $key)) {
+                $delivered++;
             }
-
-            $delivered++;
 
             $this->dispatcher->whatsApp(
                 $user,
@@ -217,12 +189,8 @@ class NotificationService
     {
         $key = "session.booked:{$session->id}";
 
-        $first = $this->notifyOnce($session->patient?->user, new SessionBookedNotification($session), $key);
+        $this->notifyOnce($session->patient?->user, new SessionBookedNotification($session), $key);
         $this->notifyOnce($session->therapist?->user, new SessionBookedNotification($session), $key);
-
-        if (! $first) {
-            return;
-        }
 
         $this->dispatcher->whatsApp(
             $session->patient?->user,
@@ -292,9 +260,7 @@ class NotificationService
         $key = "payment.review_overdue:{$payment->id}";
 
         foreach ($reviewers as $reviewer) {
-            if (! $this->notifyOnce($reviewer, new PaymentReviewOverdueNotification($payment, $pendingHours), $key)) {
-                continue;
-            }
+            $this->notifyOnce($reviewer, new PaymentReviewOverdueNotification($payment, $pendingHours), $key);
 
             $this->dispatcher->whatsApp(
                 $reviewer,
@@ -320,9 +286,7 @@ class NotificationService
 
         $key = "payment.reviewed:{$payment->id}:{$payment->status?->value}";
 
-        if (! $this->notifyOnce($patientUser, new PaymentReviewedNotification($payment), $key)) {
-            return;
-        }
+        $this->notifyOnce($patientUser, new PaymentReviewedNotification($payment), $key);
 
         if ($payment->status === PaymentReviewStatus::APPROVED) {
             $this->dispatcher->whatsApp(
@@ -339,9 +303,7 @@ class NotificationService
         $status = $therapist->approval_status?->value;
         $key = "therapist.approval:{$therapist->user_id}:{$status}:{$therapist->updated_at?->timestamp}";
 
-        if (! $this->notifyOnce($therapist->user, new TherapistApprovalNotification($therapist, $reason), $key)) {
-            return;
-        }
+        $this->notifyOnce($therapist->user, new TherapistApprovalNotification($therapist, $reason), $key);
 
         if ($status === 'approved') {
             $this->dispatcher->whatsApp(
@@ -415,20 +377,17 @@ class NotificationService
      */
     public function sessionReminder(TherapySession $session, string $window): void
     {
-        $key = "session.reminder:{$session->id}:{$window}";
+        $scheduleKey = hash('sha256', SessionClock::fromStored($session->session_date, (string) $session->session_time)->startOfMinute()->toIso8601String());
+        $key = "session.reminder:{$session->id}:{$scheduleKey}:{$window}";
 
-        $first = $this->notifyOnce($session->patient?->user, new SessionReminderNotification($session, $window), $key);
+        $this->notifyOnce($session->patient?->user, new SessionReminderNotification($session, $window), $key);
         $this->notifyOnce($session->therapist?->user, new SessionReminderNotification($session, $window), $key);
-
-        if (! $first) {
-            return;
-        }
 
         $this->dispatcher->whatsApp(
             $session->patient?->user,
             sprintf('Sakina reminder: your session is on %s.', $this->localSessionTime($session, $session->patient?->user)),
             $key,
-            ['session_id' => $session->id, 'window' => $window]
+            ['session_id' => $session->id, 'window' => $window, 'schedule_key' => $scheduleKey]
         );
     }
 

@@ -14,6 +14,7 @@ use App\Jobs\PruneScheduledDeletionsJob;
 use App\Jobs\RemindStalePaymentReviewsJob;
 use App\Jobs\SendSessionRemindersJob;
 use App\Models\IdempotencyKey as StoredIdempotencyKey;
+use App\Services\Notifications\OperationsHealth;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -56,6 +57,10 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withSchedule(function (Schedule $schedule): void {
+        $schedule->call(fn () => app(OperationsHealth::class)->heartbeat('scheduler'))
+            ->everyMinute()->name('ops-scheduler-heartbeat');
+        $schedule->command('ops:outbox-replay')->everyMinute()->withoutOverlapping();
+        $schedule->command('ops:monitor')->everyFiveMinutes()->withoutOverlapping();
         // Remove accounts that never completed OTP verification within 24h.
         $schedule->job(new CleanupUnverifiedUsersJob)->hourly();
         // Permanently purge accounts whose deletion grace period elapsed.
