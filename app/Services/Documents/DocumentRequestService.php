@@ -72,38 +72,48 @@ class DocumentRequestService
 
     public function upload(User $owner, string $id, UploadedFile $file): DocumentRequest
     {
-        $request = DB::transaction(function () use ($owner, $id, $file) {
-            $request = DocumentRequest::whereKey($id)->where('user_id', $owner->id)->lockForUpdate()->first()
-                ?? throw new NotFoundHttpException('Document request not found.');
+        $stored = null;
 
-            if (! $request->acceptsUpload()) {
-                throw new ConflictException("This request is {$request->status} and no longer accepts uploads.");
+        try {
+            $request = DB::transaction(function () use ($owner, $id, $file, &$stored) {
+                $request = DocumentRequest::whereKey($id)->where('user_id', $owner->id)->lockForUpdate()->first()
+                    ?? throw new NotFoundHttpException('Document request not found.');
+
+                if (! $request->acceptsUpload()) {
+                    throw new ConflictException("This request is {$request->status} and no longer accepts uploads.");
+                }
+
+                $previous = $request->file_path;
+                $stored = $this->files->upload($owner, $file, self::UPLOAD_PURPOSE);
+
+                $request->update([
+                    'file_path' => $stored['path'],
+                    'original_name' => $stored['original_name'],
+                    'mime_type' => $stored['mime_type'],
+                    'status' => DocumentRequest::STATUS_SUBMITTED,
+                    'submitted_at' => now(),
+                    'reviewer_id' => null,
+                    'reviewed_at' => null,
+                    'review_note' => null,
+                ]);
+
+                if ($previous && $previous !== $stored['path']) {
+                    DB::afterCommit(fn () => $this->files->discard($previous));
+                }
+
+                $this->audit->record($owner, AuditLogService::DOCUMENT_SUBMITTED, $request->id, [
+                    'doc_type' => $request->doc_type,
+                ]);
+
+                return $request->refresh();
+            });
+        } catch (\Throwable $e) {
+            if ($stored !== null) {
+                $this->files->discard($stored['path']);
             }
 
-            $previous = $request->file_path;
-            $stored = $this->files->upload($owner, $file, self::UPLOAD_PURPOSE);
-
-            $request->update([
-                'file_path' => $stored['path'],
-                'original_name' => $stored['original_name'],
-                'mime_type' => $stored['mime_type'],
-                'status' => DocumentRequest::STATUS_SUBMITTED,
-                'submitted_at' => now(),
-                'reviewer_id' => null,
-                'reviewed_at' => null,
-                'review_note' => null,
-            ]);
-
-            if ($previous && $previous !== $stored['path']) {
-                Storage::disk($this->files->disk())->delete($previous);
-            }
-
-            $this->audit->record($owner, AuditLogService::DOCUMENT_SUBMITTED, $request->id, [
-                'doc_type' => $request->doc_type,
-            ]);
-
-            return $request->refresh();
-        });
+            throw $e;
+        }
 
         $this->notifications->deliver('documentSubmitted', $request);
 
@@ -125,7 +135,8 @@ class DocumentRequestService
             }
 
             $path = (string) $request->file_path;
-            if ($path === '' || ! Storage::disk($this->files->disk())->exists($path)) {
+            $missing = $path === '' || ! Storage::disk($this->files->disk())->exists($path);
+            if ($approve && $missing) {
                 throw ValidationException::withMessages([
                     'document' => 'The uploaded file is missing; reject the request so the user can upload it again.',
                 ]);
@@ -136,7 +147,7 @@ class DocumentRequestService
                 'reviewer_id' => $staff->id,
                 'reviewed_at' => now(),
                 'review_note' => $note,
-            ]);
+            ] + ($missing ? ['file_path' => null, 'original_name' => null, 'mime_type' => null] : []));
 
             $this->audit->record(
                 $staff,
@@ -184,16 +195,18 @@ class DocumentRequestService
 
     public function toArray(DocumentRequest $request, bool $staffView = false): array
     {
+        $hasFile = $request->file_path && Storage::disk($this->files->disk())->exists($request->file_path);
+
         $out = [
             'id' => $request->id,
             'doc_type' => $request->doc_type,
             'status' => $request->status,
             'reason' => $request->reason,
             'review_note' => $request->review_note,
-            'has_file' => $request->file_path !== null,
-            'original_name' => $request->original_name,
-            'mime_type' => $request->mime_type,
-            'download_url' => $request->file_path ? url('/api/v1/files/download/'.$request->file_path) : null,
+            'has_file' => (bool) $hasFile,
+            'original_name' => $hasFile ? $request->original_name : null,
+            'mime_type' => $hasFile ? $request->mime_type : null,
+            'download_url' => $hasFile ? url('/api/v1/files/download/'.$request->file_path) : null,
             'requested_at' => $request->created_at?->toIso8601String(),
             'submitted_at' => $request->submitted_at?->toIso8601String(),
             'reviewed_at' => $request->reviewed_at?->toIso8601String(),

@@ -81,6 +81,7 @@ class ChatController extends Controller
         $found = $this->chat->attachment($request->user(), $message);
 
         return Storage::disk($this->files->disk())->download($found->file_path, $found->attachment_name ?? basename($found->file_path), [
+            'Cache-Control' => 'private, no-store',
             'Content-Type' => $found->attachment_mime ?? 'application/octet-stream',
             'X-Content-Type-Options' => 'nosniff',
             'Content-Security-Policy' => "default-src 'none'",

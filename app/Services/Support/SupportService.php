@@ -47,17 +47,29 @@ class SupportService
             $path = $stored['path'];
         }
 
-        $ticket = Support::create([
-            'id' => (string) Str::uuid(),
-            'user_id' => $user->id,
-            'type' => SupportType::from($data['type'])->value,
-            'subject' => $data['subject'] ?? null,
-            'description' => $data['description'],
-            'file_path' => $path,
-            'status' => 'open',
-        ]);
+        try {
+            $ticket = DB::transaction(function () use ($user, $data, $path) {
+                $ticket = Support::create([
+                    'id' => (string) Str::uuid(),
+                    'user_id' => $user->id,
+                    'type' => SupportType::from($data['type'])->value,
+                    'subject' => $data['subject'] ?? null,
+                    'description' => $data['description'],
+                    'file_path' => $path,
+                    'status' => 'open',
+                ]);
 
-        $this->audit->record($user, AuditLogService::SUPPORT_TICKET_CREATED, $ticket->id);
+                $this->audit->record($user, AuditLogService::SUPPORT_TICKET_CREATED, $ticket->id);
+
+                return $ticket;
+            });
+        } catch (\Throwable $e) {
+            if ($path !== null) {
+                $this->files->discard($path);
+            }
+
+            throw $e;
+        }
 
         return $ticket;
     }
@@ -167,7 +179,7 @@ class SupportService
         ];
     }
 
-    public function toArray(Support $ticket): array
+    public function toArray(Support $ticket, ?User $viewer = null): array
     {
         return [
             'id' => $ticket->id,
@@ -176,6 +188,8 @@ class SupportService
             'subject' => $ticket->subject,
             'description' => $ticket->description,
             'has_attachment' => $ticket->file_path !== null,
+            'download_url' => $ticket->file_path && $viewer && $this->files->canDownloadSupportAttachment($viewer, $ticket)
+                ? url("/api/v1/files/download/support/{$ticket->id}/attachment") : null,
             'status' => $ticket->status,
             'assigned_to' => $ticket->assigned_to,
             'created_at' => $ticket->created_at?->toIso8601String(),

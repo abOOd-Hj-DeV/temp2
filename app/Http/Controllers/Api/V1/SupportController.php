@@ -21,7 +21,7 @@ class SupportController extends Controller
         $tickets = $this->support->mine($request->user());
 
         return response()->json([
-            'data' => $tickets->through(fn ($t) => $this->support->toArray($t)),
+            'data' => $tickets->through(fn ($t) => $this->support->toArray($t, $request->user())),
         ]);
     }
 
@@ -38,13 +38,13 @@ class SupportController extends Controller
             $request->user(), $data, $request->file('attachment'),
         );
 
-        return response()->json(['data' => $this->support->toArray($ticket)], 201);
+        return response()->json(['data' => $this->support->toArray($ticket, $request->user())], 201);
     }
 
     public function show(Request $request, string $id): JsonResponse
     {
         return response()->json([
-            'data' => $this->support->toArray($this->support->show($request->user(), $id)),
+            'data' => $this->support->toArray($this->support->show($request->user(), $id), $request->user()),
         ]);
     }
 
