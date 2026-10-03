@@ -70,7 +70,10 @@ class PostgresBookingRepairRaceTest extends TestCase
             'DB_PASSWORD' => $connection['password'], 'CACHE_STORE' => 'array', 'QUEUE_CONNECTION' => 'sync',
         ];
         $input = new InputStream;
-        $a = new Process([PHP_BINARY, base_path('tests/Fixtures/BookingRepairRaceWorker.php'), json_encode($first + ['pause' => true, 'lock_table' => $lockTable])], base_path(), $environment);
+        $lockId = $lockTable === 'users'
+            ? ($first['therapist'] ?? TherapistSwitch::findOrFail($first['switch'])->new_therapist_id)
+            : null;
+        $a = new Process([PHP_BINARY, base_path('tests/Fixtures/BookingRepairRaceWorker.php'), json_encode($first + ['pause' => true, 'lock_table' => $lockTable, 'lock_id' => $lockId])], base_path(), $environment);
         $b = new Process([PHP_BINARY, base_path('tests/Fixtures/BookingRepairRaceWorker.php'), json_encode($second + ['pause' => false, 'lock_table' => $lockTable])], base_path(), $environment);
         $a->setInput($input);
         $a->setTimeout(15);

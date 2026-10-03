@@ -34,8 +34,10 @@ $app->instance(NotificationService::class, $notifications);
 $payload = json_decode($argv[1], true, flags: JSON_THROW_ON_ERROR);
 $pause = $payload['pause'];
 $lockTable = $payload['lock_table'];
-DB::listen(function (QueryExecuted $query) use (&$pause, $lockTable) {
-    if ($pause && str_contains($query->sql, 'from "'.$lockTable.'"') && str_contains($query->sql, 'for update')) {
+$lockId = $payload['lock_id'] ?? null;
+DB::listen(function (QueryExecuted $query) use (&$pause, $lockTable, $lockId) {
+    if ($pause && str_contains($query->sql, 'from "'.$lockTable.'"') && str_contains($query->sql, 'for update')
+        && ($lockId === null || in_array($lockId, $query->bindings, true))) {
         $pause = false;
         echo "locked\n";
         fflush(STDOUT);
