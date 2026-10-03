@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\V1\Admin\TherapistSwitchReviewController;
 use App\Http\Controllers\Api\V1\Admin\UserAccountController;
 use App\Http\Controllers\Api\V1\Admin\WithdrawalReviewController;
 use Illuminate\Support\Facades\Route;
+use Spatie\Permission\Middleware\PermissionMiddleware;
 
 $staffRoles = implode(',', [
     UserRole::ADMIN->value,
@@ -52,7 +53,7 @@ $contentRoles = implode(',', [
 
 Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () use ($staffRoles, $clinicalRoles, $financeRoles, $supportRoles, $contentRoles) {
 
-    Route::middleware("role:{$financeRoles}")->group(function () {
+    Route::middleware(["role:{$financeRoles}", PermissionMiddleware::class.':manage finances,api'])->group(function () {
         Route::get('/payments', [PaymentReviewController::class, 'pending']);
         Route::post('/payments/{payment}/review', [PaymentReviewController::class, 'review'])
             ->whereUuid('payment')->middleware('idempotent');
@@ -66,29 +67,33 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
     });
 
     Route::middleware("role:{$staffRoles}")->group(function () {
-        Route::get('/overview', [OverviewController::class, 'index']);
+        Route::get('/overview', [OverviewController::class, 'index'])->middleware(PermissionMiddleware::class.':view reports,api');
 
-        Route::get('/audit', [AuditLogController::class, 'index'])->middleware('throttle:30,1');
-        Route::get('/notifications', [NotificationLogController::class, 'index']);
+        Route::get('/audit', [AuditLogController::class, 'index'])->middleware(['throttle:30,1', PermissionMiddleware::class.':view reports,api']);
+        Route::get('/notifications', [NotificationLogController::class, 'index'])->middleware(PermissionMiddleware::class.':view reports,api');
 
-        Route::get('/therapists', [TherapistApprovalController::class, 'index']);
-        Route::post('/therapists/{id}/approve', [TherapistApprovalController::class, 'approve'])
-            ->whereUuid('id');
-        Route::post('/therapists/{id}/reject', [TherapistApprovalController::class, 'reject'])
-            ->whereUuid('id');
-        Route::put('/therapists/{id}/clients-limit', [TherapistApprovalController::class, 'updateLimit'])
-            ->whereUuid('id');
+        Route::middleware(PermissionMiddleware::class.':manage users,api')->group(function () {
+            Route::get('/therapists', [TherapistApprovalController::class, 'index']);
+            Route::post('/therapists/{id}/approve', [TherapistApprovalController::class, 'approve'])
+                ->whereUuid('id');
+            Route::post('/therapists/{id}/reject', [TherapistApprovalController::class, 'reject'])
+                ->whereUuid('id');
+            Route::put('/therapists/{id}/clients-limit', [TherapistApprovalController::class, 'updateLimit'])
+                ->whereUuid('id');
+        });
 
-        Route::get('/documents', [DocumentRequestController::class, 'index']);
-        Route::post('/documents', [DocumentRequestController::class, 'store'])->middleware('idempotent');
-        Route::get('/documents/{id}', [DocumentRequestController::class, 'show'])->whereUuid('id');
-        Route::post('/documents/{id}/review', [DocumentRequestController::class, 'review'])
-            ->whereUuid('id')->middleware('idempotent');
+        Route::middleware(PermissionMiddleware::class.':review documents,api')->group(function () {
+            Route::get('/documents', [DocumentRequestController::class, 'index']);
+            Route::post('/documents', [DocumentRequestController::class, 'store'])->middleware('idempotent');
+            Route::get('/documents/{id}', [DocumentRequestController::class, 'show'])->whereUuid('id');
+            Route::post('/documents/{id}/review', [DocumentRequestController::class, 'review'])
+                ->whereUuid('id')->middleware('idempotent');
+        });
     });
 
     // Staff/therapist accounts: the clinical supervisor may only create and
     // manage therapists; the per-role matrix is enforced in StaffAccountService.
-    Route::middleware("role:{$clinicalRoles}")->group(function () {
+    Route::middleware(["role:{$clinicalRoles}", PermissionMiddleware::class.':manage users,api'])->group(function () {
         Route::get('/users', [UserAccountController::class, 'index']);
         Route::post('/users', [UserAccountController::class, 'store'])->middleware(['idempotent', 'throttle:20,1']);
         Route::post('/users/{user}/invitation/resend', [UserAccountController::class, 'resendInvitation'])
@@ -98,14 +103,14 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
 
     // Patient roster and session oversight: staff plus the clinical supervisor.
     Route::middleware("role:{$clinicalRoles}")->group(function () {
-        Route::get('/patients', [PatientDirectoryController::class, 'index']);
-        Route::get('/patients/{id}', [PatientDirectoryController::class, 'show'])->whereUuid('id');
+        Route::get('/patients', [PatientDirectoryController::class, 'index'])->middleware(PermissionMiddleware::class.':view reports,api');
+        Route::get('/patients/{id}', [PatientDirectoryController::class, 'show'])->whereUuid('id')->middleware(PermissionMiddleware::class.':view reports,api');
         Route::post('/sessions/{session}/cancel', [SessionManagementController::class, 'cancel'])
-            ->whereUuid('session')->middleware('idempotent');
+            ->whereUuid('session')->middleware(['idempotent', PermissionMiddleware::class.':manage appointments,api']);
     });
 
     // Head Master (clinical_supervisor) owns the self-help programme library.
-    Route::middleware("role:{$clinicalRoles}")->group(function () {
+    Route::middleware(["role:{$clinicalRoles}", PermissionMiddleware::class.':manage content,api'])->group(function () {
         Route::get('/programs', [ProgramController::class, 'index']);
         Route::post('/programs', [ProgramController::class, 'store'])->middleware('idempotent');
         Route::put('/programs/{program}', [ProgramController::class, 'update'])->whereUuid('program');
@@ -119,7 +124,7 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
     });
 
     // Head Master (clinical_supervisor) owns the package catalogue.
-    Route::middleware("role:{$clinicalRoles}")->group(function () {
+    Route::middleware(["role:{$clinicalRoles}", PermissionMiddleware::class.':manage content,api'])->group(function () {
         Route::get('/packages', [PackageController::class, 'index']);
         Route::post('/packages', [PackageController::class, 'store'])->middleware('idempotent');
         Route::put('/packages/{package}', [PackageController::class, 'update'])->whereUuid('package');
@@ -128,13 +133,13 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
     });
 
     // Head Master (clinical_supervisor) gives the final word on therapist switches.
-    Route::middleware("role:{$clinicalRoles}")->group(function () {
+    Route::middleware(["role:{$clinicalRoles}", PermissionMiddleware::class.':manage appointments,api'])->group(function () {
         Route::get('/therapist-switches', [TherapistSwitchReviewController::class, 'index']);
         Route::post('/therapist-switches/{switch}/review', [TherapistSwitchReviewController::class, 'review'])
             ->whereUuid('switch')->middleware('idempotent');
     });
 
-    Route::middleware("role:{$clinicalRoles}")->group(function () {
+    Route::middleware(["role:{$clinicalRoles}", PermissionMiddleware::class.':view reports,api'])->group(function () {
         Route::get('/red-flags', [RedFlagController::class, 'index']);
         Route::get('/red-flags/{id}', [RedFlagController::class, 'show'])->whereUuid('id');
         Route::post('/red-flags/{id}/assign', [RedFlagController::class, 'assign'])->whereUuid('id');
@@ -142,7 +147,7 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
     });
 
     // Support tickets: support agents and clinical staff triage.
-    Route::middleware("role:{$supportRoles}")->group(function () {
+    Route::middleware(["role:{$supportRoles}", PermissionMiddleware::class.':assign support,api'])->group(function () {
         Route::get('/support', [SupportTicketController::class, 'index']);
         Route::get('/support/{id}', [SupportTicketController::class, 'show'])->whereUuid('id');
         Route::post('/support/{id}/assign', [SupportTicketController::class, 'assign'])
@@ -153,7 +158,7 @@ Route::middleware(['auth:api', 'status'])->prefix('admin')->group(function () us
     });
 
     // FAQ management: the content manager owns the FAQ library.
-    Route::middleware("role:{$contentRoles}")->group(function () {
+    Route::middleware(["role:{$contentRoles}", PermissionMiddleware::class.':manage content,api'])->group(function () {
         Route::get('/faqs', [FaqManagementController::class, 'index']);
         Route::post('/faqs', [FaqManagementController::class, 'store'])->middleware('idempotent');
         Route::put('/faqs/{id}', [FaqManagementController::class, 'update'])->whereUuid('id');

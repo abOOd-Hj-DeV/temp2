@@ -44,7 +44,7 @@ class RolePermissionSeeder extends Seeder
             ]);
 
             // تعيين الصلاحيات حسب الدور
-            if ($roleName === UserRole::SUPER_ADMIN->value) {
+            if (in_array($roleName, [UserRole::SUPER_ADMIN->value, UserRole::ADMIN->value], true)) {
                 // المدير الأعلى يحصل على جميع الصلاحيات
                 $role->syncPermissions($allApiPermissions);
 
@@ -58,13 +58,16 @@ class RolePermissionSeeder extends Seeder
 
             } elseif ($roleName === UserRole::CLINICAL_SUPERVISOR->value) {
                 // المشرف السريري (Clinical Supervisor)
-                $role->syncPermissions(['manage appointments', 'review documents', 'view reports']);
+                $role->syncPermissions(['manage users', 'manage appointments', 'review documents', 'view reports', 'manage content', 'assign support', 'view appointments']);
 
             } elseif ($roleName === UserRole::FINANCE_PARTNER->value) {
                 // شريك المالية (Finance Partner)
                 $role->syncPermissions(['manage finances', 'view reports']);
+            } elseif ($roleName === UserRole::SUPPORT_AGENT->value) {
+                $role->syncPermissions(['assign support']);
+            } elseif ($roleName === UserRole::CONTENT_MANAGER->value) {
+                $role->syncPermissions(['manage content']);
             }
-            // يمكن إضافة منطق لبقية الأدوار هنا (ADMIN, SUPPORT_AGENT, CONTENT_MANAGER)
         }
     }
 }
