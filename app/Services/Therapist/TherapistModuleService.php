@@ -43,44 +43,48 @@ class TherapistModuleService
 
     public function hide(Therapist $therapist, string $patientId, string $moduleId): array
     {
-        $patient = $this->clients->requireClient($therapist, $patientId);
-        $module = Module::find($moduleId) ?? throw new NotFoundHttpException('Module not found.');
+        return DB::transaction(function () use ($therapist, $patientId, $moduleId) {
+            $patient = $this->clients->requireActiveClient($therapist, $patientId);
+            $module = Module::find($moduleId) ?? throw new NotFoundHttpException('Module not found.');
 
-        if (! $module->is_hideable) {
-            throw ValidationException::withMessages(['module' => __('This module cannot be hidden.')]);
-        }
-
-        DB::transaction(function () use ($patient, $module, $therapist) {
-            $row = PatientModule::firstOrCreate(
-                ['patient_id' => $patient->user_id, 'module_id' => $module->id],
-                ['id' => (string) Str::uuid(), 'status' => 'pending'],
-            );
-
-            if ($row->status === 'completed') {
-                throw ValidationException::withMessages(['module' => __('A completed module cannot be hidden.')]);
+            if (! $module->is_hideable) {
+                throw ValidationException::withMessages(['module' => __('This module cannot be hidden.')]);
             }
 
-            $row->update(['hidden_by' => $therapist->user_id, 'hidden_at' => now()]);
+            DB::transaction(function () use ($patient, $module, $therapist) {
+                $row = PatientModule::firstOrCreate(
+                    ['patient_id' => $patient->user_id, 'module_id' => $module->id],
+                    ['id' => (string) Str::uuid(), 'status' => 'pending'],
+                );
+
+                if ($row->status === 'completed') {
+                    throw ValidationException::withMessages(['module' => __('A completed module cannot be hidden.')]);
+                }
+
+                $row->update(['hidden_by' => $therapist->user_id, 'hidden_at' => now()]);
+            });
+
+            $this->audit->record($therapist->user, AuditLogService::MODULE_HIDDEN, $module->id, ['patient_id' => $patient->user_id]);
+
+            return $this->rowToArray($this->access->stateFor($patient, $module));
         });
-
-        $this->audit->record($therapist->user, AuditLogService::MODULE_HIDDEN, $module->id, ['patient_id' => $patient->user_id]);
-
-        return $this->rowToArray($this->access->stateFor($patient, $module));
     }
 
     public function unhide(Therapist $therapist, string $patientId, string $moduleId): array
     {
-        $patient = $this->clients->requireClient($therapist, $patientId);
-        $module = Module::find($moduleId) ?? throw new NotFoundHttpException('Module not found.');
+        return DB::transaction(function () use ($therapist, $patientId, $moduleId) {
+            $patient = $this->clients->requireActiveClient($therapist, $patientId);
+            $module = Module::find($moduleId) ?? throw new NotFoundHttpException('Module not found.');
 
-        PatientModule::where('patient_id', $patient->user_id)
-            ->where('module_id', $module->id)
-            ->whereNotNull('hidden_at')
-            ->update(['hidden_by' => null, 'hidden_at' => null]);
+            PatientModule::where('patient_id', $patient->user_id)
+                ->where('module_id', $module->id)
+                ->whereNotNull('hidden_at')
+                ->update(['hidden_by' => null, 'hidden_at' => null]);
 
-        $this->audit->record($therapist->user, AuditLogService::MODULE_UNHIDDEN, $module->id, ['patient_id' => $patient->user_id]);
+            $this->audit->record($therapist->user, AuditLogService::MODULE_UNHIDDEN, $module->id, ['patient_id' => $patient->user_id]);
 
-        return $this->rowToArray($this->access->stateFor($patient, $module));
+            return $this->rowToArray($this->access->stateFor($patient, $module));
+        });
     }
 
     private function rowToArray(array $row): array

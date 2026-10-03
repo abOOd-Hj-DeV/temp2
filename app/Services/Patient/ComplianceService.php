@@ -46,6 +46,7 @@ class ComplianceService
         $moodScore = min(100, $moodDays / self::WINDOW_DAYS * 100);
 
         $modules = PatientModule::where('patient_id', $patient->user_id)
+            ->whereNull('hidden_at')
             ->where('created_at', '<', $windowEnd)
             ->where(function ($q) use ($windowStart) {
                 $q->where('status', 'pending')

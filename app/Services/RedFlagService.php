@@ -7,6 +7,7 @@ use App\Enums\RedFlagPriority;
 use App\Enums\RedFlagType;
 use App\Enums\SessionStatus;
 use App\Enums\UserRole;
+use App\Exceptions\ConflictException;
 use App\Models\Assessment;
 use App\Models\Patient;
 use App\Models\RedFlag;
@@ -189,7 +190,21 @@ class RedFlagService
 
     public function updateStatus(string $redFlagId, string $status, ?string $actionTaken = null): bool
     {
-        return $this->redFlags->updateStatus($redFlagId, $status, $actionTaken);
+        return DB::transaction(function () use ($redFlagId, $status, $actionTaken) {
+            $flag = RedFlag::find($redFlagId);
+            if (! $flag) {
+                return false;
+            }
+            Patient::whereKey($flag->patient_id)->lockForUpdate()->firstOrFail();
+            $flag = RedFlag::whereKey($redFlagId)->lockForUpdate()->firstOrFail();
+            if ($status === 'open' && RedFlag::where('patient_id', $flag->patient_id)
+                ->where('type', $flag->type->value)->where('status', 'open')
+                ->where('id', '!=', $flag->id)->exists()) {
+                throw new ConflictException('Another open flag of this type already exists for this patient.');
+            }
+
+            return $this->redFlags->updateStatus($redFlagId, $status, $actionTaken);
+        });
     }
 
     public function assignTo(string $redFlagId, string $userId): bool

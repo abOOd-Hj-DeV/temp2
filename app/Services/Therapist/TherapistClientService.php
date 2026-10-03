@@ -11,6 +11,7 @@ use App\Services\Session\SessionService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -130,25 +131,27 @@ class TherapistClientService
 
     public function addNote(Therapist $therapist, string $patientId, string $body, ?string $sessionId = null): TherapistClientNote
     {
-        $patient = $this->requireClient($therapist, $patientId);
+        return DB::transaction(function () use ($therapist, $patientId, $body, $sessionId) {
+            $patient = $this->requireActiveClient($therapist, $patientId);
 
-        if ($sessionId !== null) {
-            $owns = TherapySession::whereKey($sessionId)
-                ->where('therapist_id', $therapist->user_id)
-                ->where('patient_id', $patient->user_id)
-                ->exists();
+            if ($sessionId !== null) {
+                $owns = TherapySession::whereKey($sessionId)
+                    ->where('therapist_id', $therapist->user_id)
+                    ->where('patient_id', $patient->user_id)
+                    ->exists();
 
-            if (! $owns) {
-                throw ValidationException::withMessages(['session_id' => 'Session does not belong to this client.']);
+                if (! $owns) {
+                    throw ValidationException::withMessages(['session_id' => 'Session does not belong to this client.']);
+                }
             }
-        }
 
-        return TherapistClientNote::create([
-            'therapist_id' => $therapist->user_id,
-            'patient_id' => $patient->user_id,
-            'session_id' => $sessionId,
-            'body' => $body,
-        ]);
+            return TherapistClientNote::create([
+                'therapist_id' => $therapist->user_id,
+                'patient_id' => $patient->user_id,
+                'session_id' => $sessionId,
+                'body' => $body,
+            ]);
+        });
     }
 
     public function clientToArray(Patient $patient, ?Therapist $therapist = null): array
@@ -212,6 +215,18 @@ class TherapistClientService
         if (! $patient) {
             // 404 rather than 403 so therapists cannot enumerate patient ids.
             throw new NotFoundHttpException('Client not found.');
+        }
+
+        return $patient;
+    }
+
+    public function requireActiveClient(Therapist $therapist, string $patientId): Patient
+    {
+        $patient = Patient::whereKey($patientId)->where('therapist_id', $therapist->user_id)
+            ->whereHas('user', fn ($q) => $q->where('is_active', true)->whereNull('anonymized_at'))
+            ->lockForUpdate()->first();
+        if (! $patient) {
+            throw new NotFoundHttpException('Active client not found.');
         }
 
         return $patient;
