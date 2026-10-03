@@ -55,13 +55,17 @@ class SessionService
 
         try {
             $session = DB::transaction(function () use ($patient, $therapist, $data, $date, $time) {
-                $therapist = Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
-                // Re-read the assignment under lock so a concurrent switch or
-                // booking cannot race it; the caller's instance stays in sync.
+                $lockedPatient = BookingLocks::patient($patient->user_id);
+                BookingLocks::subscriptions($lockedPatient);
+                $therapist = BookingLocks::therapists([$therapist->user_id])->firstOrFail();
                 $patient->setRawAttributes(
-                    Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail()->getAttributes(),
+                    $lockedPatient->getAttributes(),
                     true
                 );
+
+                if (SessionClock::fromStored($date, $time)->startOfMinute()->lte(now())) {
+                    throw ValidationException::withMessages(['session_date' => 'The session must be in the future.']);
+                }
 
                 $this->assertBookableTherapist($patient, $therapist);
 
@@ -77,7 +81,7 @@ class SessionService
                     throw ValidationException::withMessages(['session_time' => 'You already have a session at this time.']);
                 }
 
-                $isExistingClient = $this->sessions->countNonCancelledBetween($patient->user_id, $therapist->user_id) > 0;
+                $isExistingClient = $therapist->reservedClients()->whereKey($patient->user_id)->exists();
                 $distinctClients = $this->distinctClients($therapist);
 
                 if (! $isExistingClient && $distinctClients >= $therapist->clients_limit) {
@@ -93,6 +97,9 @@ class SessionService
                 // have not bought yet.
                 if ($subscription !== null) {
                     $subscription = Subscription::whereKey($subscription->id)->lockForUpdate()->firstOrFail();
+                    if (! $subscription->is_active) {
+                        throw ValidationException::withMessages(['subscription' => 'The package is no longer active.']);
+                    }
                     $this->assertWithinPackageQuota($patient, $subscription, SessionClock::fromStored($date, $time));
                     $coveringSubscription = $subscription;
                 }
@@ -128,7 +135,7 @@ class SessionService
                     $patient->update(['therapist_id' => $therapist->user_id]);
                 }
 
-                $therapist->update(['clients_count' => $isExistingClient ? $distinctClients : $distinctClients + 1]);
+                $therapist->syncClientsCount();
 
                 $this->audit->record($patient->user_id, AuditLogService::SESSION_BOOKED, $session->id, [
                     'therapist_id' => $therapist->user_id,
@@ -181,12 +188,11 @@ class SessionService
      */
     public function requestCancellation(TherapySession $session, User $actor): TherapySession
     {
-        if ($actor->id !== $session->patient_id) {
-            throw new AuthorizationException('Only the patient of this session can request a cancellation.');
-        }
-
         $fresh = DB::transaction(function () use ($session, $actor) {
-            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+            $locked = BookingLocks::session($session->id);
+            if ($actor->id !== $locked->patient_id) {
+                throw new AuthorizationException('Only the patient of this session can request a cancellation.');
+            }
 
             if (! in_array($locked->status, [SessionStatus::PENDING, SessionStatus::CONFIRMED], true)) {
                 throw new ConflictException(sprintf('A %s session cannot be cancelled.', $locked->status->value));
@@ -218,10 +224,9 @@ class SessionService
      */
     public function decideCancellation(TherapySession $session, User $actor, bool $approve): TherapySession
     {
-        $this->assertOwner($session, $actor);
-
         $fresh = DB::transaction(function () use ($session, $actor, $approve) {
-            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+            $locked = BookingLocks::session($session->id);
+            $this->assertOwner($locked, $actor);
 
             if ($locked->cancel_requested_by === null) {
                 throw new ConflictException('There is no pending cancellation request for this session.');
@@ -251,12 +256,6 @@ class SessionService
      */
     public function confirm(TherapySession $session, User $actor): TherapySession
     {
-        $this->assertOwner($session, $actor);
-
-        if ($session->payment_status === PaymentStatus::PENDING) {
-            throw ValidationException::withMessages(['payment_status' => 'Payment proof must be approved before confirming.']);
-        }
-
         return $this->transition($session, SessionStatus::CONFIRMED, $actor, [SessionStatus::PENDING]);
     }
 
@@ -266,18 +265,6 @@ class SessionService
      */
     public function complete(TherapySession $session, User $actor, ?string $summary): TherapySession
     {
-        $this->assertOwner($session, $actor);
-
-        if ($this->startsAt($session)->isFuture()) {
-            throw ValidationException::withMessages(['status' => 'A session cannot be completed before it starts.']);
-        }
-
-        if ($session->attendance_confirmed_at === null) {
-            throw ValidationException::withMessages([
-                'attendance' => 'The patient (or a supervisor) must confirm attendance before the session can be completed.',
-            ]);
-        }
-
         return $this->transition($session, SessionStatus::COMPLETED, $actor, [SessionStatus::CONFIRMED], [
             'summary' => $summary,
         ]);
@@ -292,16 +279,14 @@ class SessionService
     {
         $isStaff = in_array($actor->role, [UserRole::ADMIN, UserRole::SUPER_ADMIN, UserRole::CLINICAL_SUPERVISOR], true);
 
-        if (! $isStaff && $actor->id !== $session->patient_id) {
-            throw new AuthorizationException('Only the patient of this session can confirm attendance.');
-        }
-
-        if ($this->startsAt($session)->isFuture()) {
-            throw ValidationException::withMessages(['attendance' => 'Attendance can only be confirmed after the session starts.']);
-        }
-
         return DB::transaction(function () use ($session, $actor, $isStaff) {
-            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+            $locked = BookingLocks::session($session->id);
+            if (! $isStaff && $actor->id !== $locked->patient_id) {
+                throw new AuthorizationException('Only the patient of this session can confirm attendance.');
+            }
+            if ($this->startsAt($locked)->isFuture()) {
+                throw ValidationException::withMessages(['attendance' => 'Attendance can only be confirmed after the session starts.']);
+            }
 
             if ($locked->status !== SessionStatus::CONFIRMED) {
                 throw new ConflictException(sprintf('Attendance cannot be confirmed for a %s session.', $locked->status->value));
@@ -311,7 +296,7 @@ class SessionService
                 throw new ConflictException('Attendance was already confirmed.');
             }
 
-            $this->sessions->update($locked, ['attendance_confirmed_at' => now()]);
+            $this->sessions->update($locked, ['attendance_confirmed_at' => now(), 'attendance_schedule_version' => $locked->schedule_version]);
 
             $this->audit->record($actor, AuditLogService::SESSION_ATTENDANCE_CONFIRMED, $locked->id, [
                 'by_staff' => $isStaff,
@@ -327,25 +312,32 @@ class SessionService
      */
     public function report(TherapySession $session, User $actor, string $summary): TherapySession
     {
-        $this->assertOwner($session, $actor);
-
-        if ($session->status === SessionStatus::CONFIRMED) {
-            return $this->complete($session, $actor, $summary);
-        }
-
-        if ($session->status !== SessionStatus::COMPLETED) {
-            throw ValidationException::withMessages(['status' => 'Reports can only be written for confirmed or completed sessions.']);
-        }
-
         return DB::transaction(function () use ($session, $actor, $summary) {
-            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+            $locked = BookingLocks::session($session->id);
+            $this->assertOwner($locked, $actor);
+            if ($locked->status === SessionStatus::CONFIRMED) {
+                return $this->complete($locked, $actor, $summary);
+            }
+            if ($locked->status !== SessionStatus::COMPLETED) {
+                throw ValidationException::withMessages(['status' => 'Reports can only be written for confirmed or completed sessions.']);
+            }
             $revision = $locked->report_revision + 1;
+            $previous = $locked->summary;
+            $previousHash = $previous === null ? null : hash('sha256', $previous);
+            $patientAnonymized = User::whereKey($locked->patient_id)->whereNotNull('anonymized_at')->exists();
+
+            DB::table('booking_report_revisions')->insert([
+                'session_id' => $locked->id, 'revision' => $revision, 'actor_id' => $actor->id,
+                'previous_summary' => $patientAnonymized ? null : $previous, 'new_summary' => $patientAnonymized ? null : $summary,
+                'previous_sha256' => $previousHash, 'new_sha256' => hash('sha256', $summary),
+                'created_at' => now(),
+            ]);
 
             $this->sessions->update($locked, ['summary' => $summary, 'report_revision' => $revision]);
 
             $this->audit->record($actor, AuditLogService::SESSION_REPORT_REVISED, $locked->id, [
                 'revision' => $revision,
-                'previous_sha256' => $locked->summary === null ? null : hash('sha256', $locked->summary),
+                'previous_sha256' => $previousHash,
                 'new_sha256' => hash('sha256', $summary),
             ]);
 
@@ -359,16 +351,14 @@ class SessionService
      */
     public function requestReschedule(TherapySession $session, User $actor, string $date, string $time): TherapySession
     {
-        if ($actor->id !== $session->patient_id) {
-            throw new AuthorizationException('Only the patient of this session can request a reschedule.');
-        }
-
-        $this->assertCancellable($session);
-
         [$date, $time] = $this->requestedSlot($date, $time, $actor);
 
         $fresh = DB::transaction(function () use ($session, $actor, $date, $time) {
-            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+            $locked = BookingLocks::session($session->id);
+            if ($actor->id !== $locked->patient_id) {
+                throw new AuthorizationException('Only the patient of this session can request a reschedule.');
+            }
+            $this->assertCancellable($locked);
 
             if (! in_array($locked->status, [SessionStatus::PENDING, SessionStatus::CONFIRMED], true)) {
                 throw new ConflictException(sprintf('A %s session cannot be rescheduled.', $locked->status->value));
@@ -405,12 +395,10 @@ class SessionService
      */
     public function decideReschedule(TherapySession $session, User $actor, bool $approve): TherapySession
     {
-        $this->assertOwner($session, $actor);
-
         try {
             $fresh = DB::transaction(function () use ($session, $actor, $approve) {
-                Therapist::whereKey($session->therapist_id)->lockForUpdate()->firstOrFail();
-                $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+                $locked = BookingLocks::session($session->id);
+                $this->assertOwner($locked, $actor);
 
                 if ($locked->reschedule_date === null) {
                     throw new ConflictException('There is no pending reschedule request for this session.');
@@ -432,9 +420,21 @@ class SessionService
                     // the quota may all have changed since the patient asked.
                     $this->assertRescheduleTarget($locked, Carbon::parse($newDate, 'UTC'), $newTime);
 
+                    $history = $locked->schedule_history ?? [];
+                    $history[] = [
+                        'version' => $locked->schedule_version,
+                        'date' => $locked->session_date->toDateString(), 'time' => $locked->session_time,
+                        'attendance_confirmed_at' => $locked->attendance_confirmed_at?->toISOString(),
+                        'changed_at' => now()->toISOString(), 'changed_by' => $actor->id,
+                    ];
+
                     $this->sessions->update($locked, $clear + [
                         'session_date' => $newDate,
                         'session_time' => $newTime,
+                        'schedule_version' => $locked->schedule_version + 1,
+                        'schedule_history' => $history,
+                        'attendance_confirmed_at' => null,
+                        'attendance_schedule_version' => null,
                         'reminder_sent' => false,
                         'reminder_1h_sent' => false,
                     ]);
@@ -462,17 +462,19 @@ class SessionService
      */
     public function setLink(TherapySession $session, User $actor, string $link): TherapySession
     {
-        $this->assertOwner($session, $actor);
+        return DB::transaction(function () use ($session, $actor, $link) {
+            $locked = BookingLocks::session($session->id);
+            $this->assertOwner($locked, $actor);
 
-        if (in_array($session->status, [SessionStatus::CANCELLED, SessionStatus::COMPLETED], true)) {
-            throw ValidationException::withMessages(['status' => 'Cannot set a link on a closed session.']);
-        }
+            if (in_array($locked->status, [SessionStatus::CANCELLED, SessionStatus::COMPLETED], true)) {
+                throw ValidationException::withMessages(['status' => 'Cannot set a link on a closed session.']);
+            }
 
-        $this->assertLinkMatchesMedium($session, $link);
+            $this->assertLinkMatchesMedium($locked, $link);
+            $this->sessions->update($locked, ['link' => $link]);
 
-        $this->sessions->update($session, ['link' => $link]);
-
-        return $session->refresh();
+            return $locked->refresh();
+        });
     }
 
     /**
@@ -481,10 +483,9 @@ class SessionService
      */
     public function markPaidAndConfirmed(TherapySession $session, User $actor): TherapySession
     {
-        $this->sessions->update($session, ['payment_status' => PaymentStatus::PAID->value]);
-        $session->refresh();
-
-        return $this->transition($session, SessionStatus::CONFIRMED, $actor, [SessionStatus::PENDING]);
+        return $this->transition($session, SessionStatus::CONFIRMED, $actor, [SessionStatus::PENDING], [
+            'payment_status' => PaymentStatus::PAID->value,
+        ], true);
     }
 
     public function forPatient(string $patientId, int $perPage): LengthAwarePaginator
@@ -504,7 +505,7 @@ class SessionService
 
     public function startsAt(TherapySession $session): Carbon
     {
-        return SessionClock::fromStored($session->session_date, (string) $session->session_time);
+        return SessionClock::fromStored($session->session_date, (string) $session->session_time)->startOfMinute();
     }
 
     /**
@@ -517,6 +518,10 @@ class SessionService
     {
         try {
             $utc = SessionClock::toUtc($date, $time, $actor->timezone());
+            if ($utc->copy()->setTimezone($actor->timezone())->format('Y-m-d H:i') !== $date.' '.$time) {
+                throw new \InvalidArgumentException('The local date or time does not exist.');
+            }
+            $utc->startOfMinute();
         } catch (\Throwable) {
             throw ValidationException::withMessages(['session_date' => 'The date or time is invalid.']);
         }
@@ -532,19 +537,36 @@ class SessionService
      * State-machine transition guarded by a row lock so two concurrent
      * actors can never both succeed on the same session.
      */
-    private function transition(TherapySession $session, SessionStatus $to, User $actor, array $allowedFrom, array $extra = []): TherapySession
+    private function transition(TherapySession $session, SessionStatus $to, User $actor, array $allowedFrom, array $extra = [], bool $fromPayment = false): TherapySession
     {
-        if (! in_array($session->status, $allowedFrom, true)) {
-            throw ValidationException::withMessages([
-                'status' => sprintf('Cannot move a %s session to %s.', $session->status->value, $to->value),
-            ]);
-        }
+        [$fresh, $from] = DB::transaction(function () use ($session, $to, $actor, $allowedFrom, $extra, $fromPayment) {
+            $locked = BookingLocks::session($session->id);
 
-        [$fresh, $from] = DB::transaction(function () use ($session, $to, $actor, $allowedFrom, $extra) {
-            $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+            if (! $fromPayment && ($to !== SessionStatus::CANCELLED || $actor->role === UserRole::THERAPIST)) {
+                $this->assertOwner($locked, $actor);
+            }
 
             if (! in_array($locked->status, $allowedFrom, true)) {
+                if (! in_array($session->status, $allowedFrom, true)) {
+                    throw ValidationException::withMessages([
+                        'status' => sprintf('Cannot move a %s session to %s.', $locked->status->value, $to->value),
+                    ]);
+                }
                 throw new ConflictException(sprintf('Session is already %s.', $locked->status->value));
+            }
+
+            if ($to === SessionStatus::CONFIRMED && ! $fromPayment && $locked->payment_status === PaymentStatus::PENDING) {
+                throw ValidationException::withMessages(['payment_status' => 'Payment proof must be approved before confirming.']);
+            }
+            if ($to === SessionStatus::COMPLETED) {
+                if ($this->startsAt($locked)->isFuture()) {
+                    throw ValidationException::withMessages(['status' => 'A session cannot be completed before it starts.']);
+                }
+                if ($locked->attendance_confirmed_at === null
+                    || $locked->attendance_schedule_version !== $locked->schedule_version
+                    || $locked->attendance_confirmed_at->lt($this->startsAt($locked))) {
+                    throw ValidationException::withMessages(['attendance' => 'Attendance must be confirmed for the current schedule before completing.']);
+                }
             }
 
             $from = $locked->status;
@@ -592,7 +614,7 @@ class SessionService
      */
     private function assertRescheduleTarget(TherapySession $session, Carbon $date, string $time): void
     {
-        $startsAt = SessionClock::fromStored($date, $time);
+        $startsAt = SessionClock::fromStored($date, $time)->startOfMinute();
 
         if ($startsAt->lte(now())) {
             throw ValidationException::withMessages(['session_date' => 'The session must be in the future.']);
@@ -612,11 +634,11 @@ class SessionService
             return;
         }
 
-        $subscription = Subscription::find($session->subscription_id);
+        $subscription = Subscription::whereKey($session->subscription_id)->lockForUpdate()->first();
         $patient = Patient::with('user')->find($session->patient_id);
 
         if ($subscription === null || $patient === null) {
-            return;
+            throw ValidationException::withMessages(['subscription' => 'The package covering this session is unavailable.']);
         }
 
         if (! $subscription->is_active) {
@@ -707,10 +729,7 @@ class SessionService
 
     private function distinctClients(Therapist $therapist): int
     {
-        return $therapist->sessions()
-            ->where('status', '!=', SessionStatus::CANCELLED->value)
-            ->distinct('patient_id')
-            ->count('patient_id');
+        return $therapist->reservedClients()->count();
     }
 
     private function syncClientsCount(Therapist $therapist): void

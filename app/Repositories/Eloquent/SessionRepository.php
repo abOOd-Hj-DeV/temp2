@@ -160,6 +160,7 @@ class SessionRepository implements SessionRepositoryInterface
     {
         $open = TherapySession::where('subscription_id', $subscriptionId)
             ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+            ->orderBy('id')
             ->lockForUpdate()
             ->get();
 

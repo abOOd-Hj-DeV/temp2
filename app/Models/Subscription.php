@@ -59,6 +59,13 @@ class Subscription extends Model
         return $this->verification_status === 'approved'
             && $this->cancelled_at === null
             && $this->end_date !== null
-            && $this->end_date->gte(now()->startOfDay());
+            && $this->end_date->toDateString() >= self::localDateForPatient($this->patient_id);
+    }
+
+    public static function localDateForPatient(string $patientId): string
+    {
+        $timezone = Patient::findOrFail($patientId)->user?->timezone() ?? config('app.timezone', 'UTC');
+
+        return now($timezone)->toDateString();
     }
 }

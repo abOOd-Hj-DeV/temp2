@@ -5,6 +5,7 @@
 namespace App\Models;
 
 use App\Enums\ApprovalStatus;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -79,7 +80,21 @@ class Therapist extends Model
      */
     public function getCanAcceptNewClientsAttribute(): bool
     {
-        return $this->clients_count < $this->clients_limit
+        return $this->reservedClients()->count() < $this->clients_limit
             && $this->approval_status === ApprovalStatus::APPROVED;
+    }
+
+    /** Assigned patients and non-cancelled reservations, counted once per patient. */
+    public function reservedClients(): Builder
+    {
+        return Patient::where(function ($query) {
+            $query->where('therapist_id', $this->user_id)
+                ->orWhereIn('user_id', $this->sessions()->where('status', '!=', 'cancelled')->select('patient_id'));
+        });
+    }
+
+    public function syncClientsCount(): void
+    {
+        $this->update(['clients_count' => $this->reservedClients()->count()]);
     }
 }

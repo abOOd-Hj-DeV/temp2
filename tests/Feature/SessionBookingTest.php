@@ -200,6 +200,7 @@ class SessionBookingTest extends TestCase
 
     public function test_rescheduling_excludes_only_the_session_being_moved(): void
     {
+        $this->travelTo(now()->startOfDay()->addHours(8));
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
         $id = $this->book()->assertCreated()->json('session.id');
         $day = strtolower(now()->addDay()->format('l'));
@@ -220,6 +221,7 @@ class SessionBookingTest extends TestCase
 
     public function test_reschedule_approval_rechecks_conflicts_with_new_bookings(): void
     {
+        $this->travelTo(now()->startOfDay()->addHours(8));
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
         $id = $this->book()->assertCreated()->json('session.id');
         $day = strtolower(now()->addDay()->format('l'));
@@ -381,6 +383,7 @@ class SessionBookingTest extends TestCase
 
     public function test_reschedule_requires_therapist_approval_and_keeps_original_slot_until_then(): void
     {
+        $this->travelTo(now()->startOfDay()->addHours(8));
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
         $id = $this->book()->assertCreated()->json('session.id');
 

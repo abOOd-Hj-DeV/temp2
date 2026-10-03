@@ -210,11 +210,12 @@ class WalletService
         return Subscription::where('therapist_id', $therapist->user_id)
             ->where('verification_status', 'approved')
             ->whereNull('cancelled_at')
-            ->whereDate('end_date', '>=', now()->toDateString())
+            ->whereNotNull('end_date')
             ->withCount(['sessions as delivered_count' => fn ($q) => $q
                 ->where('status', SessionStatus::COMPLETED->value)
                 ->whereNotNull('attendance_confirmed_at')])
             ->get()
+            ->filter(fn (Subscription $s) => $s->is_active)
             ->sum(fn (Subscription $s) => self::sessionShare($s)
                 * max(0, (int) $s->sessions_total - (int) $s->delivered_count));
     }

@@ -22,6 +22,7 @@ class TherapySession extends Model
         'attendance_confirmed_at', 'report_revision', 'reschedule_date', 'reschedule_time',
         'reschedule_requested_by', 'reschedule_requested_at', 'subscription_id',
         'cancel_requested_by', 'cancel_requested_at', 'cancel_rejected',
+        'schedule_version', 'attendance_schedule_version', 'schedule_history',
     ];
 
     protected $casts = [
@@ -39,6 +40,9 @@ class TherapySession extends Model
         'reschedule_requested_at' => 'datetime',
         'cancel_requested_at' => 'datetime',
         'cancel_rejected' => 'boolean',
+        'schedule_version' => 'integer',
+        'attendance_schedule_version' => 'integer',
+        'schedule_history' => 'array',
     ];
 
     public static function durationMinutes(): int
