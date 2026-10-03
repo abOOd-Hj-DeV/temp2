@@ -33,7 +33,7 @@ class TherapistRepository implements TherapistRepositoryInterface
             ->when($filters['language'] ?? null, fn ($q, $v) => $q->whereJsonContains('languages', $v))
             ->when(
                 ($filters['accepting_clients'] ?? false) === true,
-                fn ($q) => $q->whereColumn('clients_count', '<', 'clients_limit')
+                fn ($q) => $q->acceptingClients()
             )
             ->orderByDesc('rating')
             ->paginate($perPage);

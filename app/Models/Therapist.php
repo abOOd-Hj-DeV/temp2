@@ -5,6 +5,7 @@
 namespace App\Models;
 
 use App\Enums\ApprovalStatus;
+use App\Enums\SessionStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -81,15 +82,42 @@ class Therapist extends Model
     public function getCanAcceptNewClientsAttribute(): bool
     {
         return $this->reservedClients()->count() < $this->clients_limit
-            && $this->approval_status === ApprovalStatus::APPROVED;
+            && $this->isBookable();
     }
 
-    /** Assigned patients and non-cancelled reservations, counted once per patient. */
+    public function isBookable(): bool
+    {
+        return $this->approval_status === ApprovalStatus::APPROVED && $this->user?->is_active === true;
+    }
+
+    /** Current assignments and future/in-progress appointments, counted once per patient. */
     public function reservedClients(): Builder
     {
-        return Patient::where(function ($query) {
-            $query->where('therapist_id', $this->user_id)
-                ->orWhereIn('user_id', $this->sessions()->where('status', '!=', 'cancelled')->select('patient_id'));
+        return self::reservedClientsFor($this->user_id);
+    }
+
+    public function scopeAcceptingClients(Builder $query): Builder
+    {
+        return $query->where('approval_status', ApprovalStatus::APPROVED->value)
+            ->whereHas('user', fn ($users) => $users->where('is_active', true))
+            ->where('clients_limit', '>', self::reservedClientsFor('therapists.user_id', column: true)->selectRaw('COUNT(*)'));
+    }
+
+    private static function reservedClientsFor(string $therapistId, bool $column = false): Builder
+    {
+        $cutoff = now('UTC')->subMinutes(TherapySession::durationMinutes());
+        $where = $column ? 'whereColumn' : 'where';
+        $reservations = TherapySession::query()->{$where}('therapist_id', $therapistId)
+            ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+            ->where(function ($query) use ($cutoff) {
+                $query->whereDate('session_date', '>', $cutoff->toDateString())
+                    ->orWhere(fn ($sameDay) => $sameDay->whereDate('session_date', $cutoff->toDateString())
+                        ->where('session_time', '>', $cutoff->format('H:i:s')));
+            });
+
+        return Patient::where(function ($query) use ($reservations, $where, $therapistId) {
+            $query->{$where}('patients.therapist_id', $therapistId)
+                ->orWhereIn('user_id', $reservations->select('patient_id'));
         });
     }
 
