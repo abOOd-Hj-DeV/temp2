@@ -448,17 +448,30 @@ class AuthService
         }
 
         if ($stored->used_at !== null) {
-            Log::warning('Refresh token replay detected; revoking all sessions', [
-                'user_id' => $stored->user_id,
-                'family_id' => $stored->family_id,
-            ]);
+            DB::transaction(function () use ($stored): void {
+                $user = User::whereKey($stored->user_id)->lockForUpdate()->first();
+                if (! $user) {
+                    return;
+                }
 
-            if ($user) {
-                $user->revokeAllTokens();
-                $this->audit->record($user, AuditLogService::REFRESH_TOKEN_REPLAYED, $user->id, [
-                    'family_id' => $stored->family_id,
+                $replayed = RefreshToken::whereKey($stored->id)
+                    ->where('user_id', $user->id)
+                    ->where('token_hash', $stored->token_hash)
+                    ->lockForUpdate()->first();
+                if (! $replayed || $replayed->revoked_at !== null || $replayed->used_at === null
+                    || (int) $replayed->credential_version !== (int) $user->credential_version) {
+                    return;
+                }
+
+                Log::warning('Refresh token replay detected; revoking all sessions', [
+                    'user_id' => $user->id,
+                    'family_id' => $replayed->family_id,
                 ]);
-            }
+                $this->audit->record($user, AuditLogService::REFRESH_TOKEN_REPLAYED, $user->id, [
+                    'family_id' => $replayed->family_id,
+                ]);
+                $user->revokeAllTokens();
+            });
 
             $this->invalidRefresh();
         }
