@@ -5,10 +5,13 @@ namespace Tests\Feature;
 use App\Events\Auth\CredentialsRevoked;
 use App\Models\AuditLog;
 use App\Models\RefreshToken;
+use App\Models\SecurityAuditIntent;
 use App\Models\User;
 use App\Services\AuditLogService;
 use App\Services\Auth\AuthService;
 use App\Services\Auth\OtpService;
+use App\Services\Auth\ReplayAuditService;
+use App\Services\Patient\AccountAnonymizer;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -73,6 +76,7 @@ class RefreshReplayAuditTest extends TestCase
             'refresh' => $user->refreshTokens()->orderBy('id')->get()->toArray(),
             'challenges' => DB::table('auth_login_challenges')->where('user_id', $user->id)->get()->map(fn ($row) => (array) $row)->all(),
             'replay_audits' => AuditLog::where('user_id', $user->id)->where('action', AuditLogService::REFRESH_TOKEN_REPLAYED)->count(),
+            'audit_intents' => SecurityAuditIntent::where('user_id', $user->id)->get()->toArray(),
         ];
     }
 
@@ -96,9 +100,136 @@ class RefreshReplayAuditTest extends TestCase
         }
     }
 
-    public function test_mandatory_replay_audit_failure_preserves_credentials_and_emits_no_revocation(): void
+    public function test_mandatory_replay_audit_failure_revokes_credentials_and_commits_durable_intent(): void
     {
         [$user, $replay, $current] = $this->credentials();
+        $seen = [];
+        Event::listen(CredentialsRevoked::class, function ($event) use (&$seen): void {
+            $seen[] = [$event->userId, DB::transactionLevel(), SecurityAuditIntent::count()];
+        });
+        Log::spy();
+        $this->rejectAudit();
+        try {
+            $this->assertInvalidRefresh($replay);
+        } finally {
+            $this->allowAudit();
+        }
+        $this->assertSame(2, $user->fresh()->credential_version);
+        $this->assertSame(0, $user->tokens()->count());
+        $this->assertSame(0, $user->refreshTokens()->whereNull('revoked_at')->count());
+        $this->assertSame(0, DB::table('auth_login_challenges')->where('user_id', $user->id)->count());
+        $this->assertSame([[$user->id, 0, 1]], $seen);
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertNull(Cache::get($this->otpKey($user)));
+        $intent = SecurityAuditIntent::sole();
+        $this->assertNull($intent->delivered_at);
+        $this->assertSame(1, $intent->credential_generation);
+        $this->assertSame(1, $intent->attempts);
+        $this->assertSame(0, AuditLog::where('action', AuditLogService::REFRESH_TOKEN_REPLAYED)->count());
+        Log::shouldHaveReceived('error')->once()->with('Replay audit pending durable intent delivery', ['intent_id' => $intent->id, 'error' => $intent->last_error]);
+        $this->assertStringNotContainsString($replay, $intent->toJson());
+        $this->assertStringNotContainsString(hash('sha256', $replay), $intent->toJson());
+        $this->assertStringNotContainsString('Synthetic replay audit failure', $intent->toJson());
+        foreach ($current as $tokens) {
+            $this->app['auth']->forgetGuards();
+            $this->getJson('/api/v1/auth/user', ['Authorization' => 'Bearer '.$tokens['access_token']])->assertUnauthorized();
+            $this->assertInvalidRefresh($tokens['refresh_token']);
+        }
+        $this->assertSame(1, SecurityAuditIntent::count());
+    }
+
+    public function test_pending_audit_retries_recover_once_with_original_occurrence_and_no_repeat_revocation(): void
+    {
+        [$user, $replay] = $this->credentials();
+        $occurred = now()->copy();
+        $this->rejectAudit();
+        try {
+            $this->assertInvalidRefresh($replay);
+            $intent = SecurityAuditIntent::sole();
+            $this->travel(61)->seconds();
+            $this->artisan('security-audit:replay')->expectsOutput('Attempted: 1; failed: 1; pending: 1.')->assertFailed();
+            $this->assertSame(2, $intent->fresh()->attempts);
+            $this->assertNull($intent->fresh()->delivered_at);
+            $this->assertSame(0, AuditLog::whereKey($intent->id)->count());
+        } finally {
+            $this->allowAudit();
+        }
+        $this->travel(61)->seconds();
+        $this->artisan('security-audit:replay')->expectsOutput('Attempted: 1; failed: 0; pending: 0.')->assertSuccessful();
+        $this->assertNotNull($intent->fresh()->delivered_at);
+        $audit = AuditLog::findOrFail($intent->id);
+        $this->assertSame($user->id, $audit->user_id);
+        $this->assertSame(['family_id' => $intent->family_id], $audit->details);
+        $this->assertTrue($audit->timestamp->equalTo($occurred));
+        $this->assertTrue(app(ReplayAuditService::class)->deliver($intent->id));
+        $this->artisan('security-audit:replay')->expectsOutput('Attempted: 0; failed: 0; pending: 0.')->assertSuccessful();
+        $this->assertSame(1, AuditLog::whereKey($intent->id)->count());
+        $this->assertSame(2, $user->fresh()->credential_version);
+    }
+
+    public function test_pending_audit_survives_deleted_and_anonymized_actor(): void
+    {
+        foreach (['deleted', 'anonymized'] as $state) {
+            [$user, $replay] = $this->credentials();
+            $this->rejectAudit();
+            try {
+                $this->assertInvalidRefresh($replay);
+            } finally {
+                $this->allowAudit();
+            }
+            $intent = SecurityAuditIntent::where('user_id', $user->id)->sole();
+            if ($state === 'deleted') {
+                $user->delete();
+                $this->assertNull(User::find($user->id));
+            } else {
+                app(AccountAnonymizer::class)->anonymize($user);
+                $this->assertNotNull($user->fresh()->anonymized_at);
+            }
+            $this->assertTrue(app(ReplayAuditService::class)->deliver($intent->id));
+            $this->assertSame($user->id, AuditLog::findOrFail($intent->id)->user_id);
+            $this->assertSame(1, $intent->fresh()->credential_generation);
+            $this->assertNotNull($intent->fresh()->delivered_at);
+        }
+    }
+
+    public function test_pending_payload_is_immutable_in_models_and_database_while_retry_state_is_mutable(): void
+    {
+        [$user, $replay] = $this->credentials();
+        $this->rejectAudit();
+        try {
+            $this->assertInvalidRefresh($replay);
+        } finally {
+            $this->allowAudit();
+        }
+        $intent = SecurityAuditIntent::sole();
+        try {
+            $intent->forceFill(['action' => 'incorrect'])->save();
+            $this->fail('Immutable model payload must reject updates.');
+        } catch (\LogicException $exception) {
+            $this->assertStringContainsString('immutable', $exception->getMessage());
+        }
+        foreach (['update', 'delete'] as $mutation) {
+            try {
+                DB::transaction(function () use ($intent, $mutation): void {
+                    $query = DB::table('security_audit_intents')->where('id', $intent->id);
+                    if ($mutation === 'update') {
+                        $query->update(['user_id' => (string) Str::uuid()]);
+                    } else {
+                        $query->delete();
+                    }
+                });
+                $this->fail('Immutable database payload must reject mutation.');
+            } catch (QueryException $exception) {
+                $this->assertStringContainsString('immutable', $exception->getMessage());
+            }
+        }
+        $this->assertSame($user->id, $intent->fresh()->user_id);
+        $this->assertTrue(app(ReplayAuditService::class)->deliver($intent->id));
+    }
+
+    public function test_audit_outage_enclosing_rollback_discards_intent_revocation_and_notification(): void
+    {
+        [$user, $replay] = $this->credentials();
         $before = $this->snapshot($user);
         $seen = [];
         Event::listen(CredentialsRevoked::class, function ($event) use (&$seen): void {
@@ -106,19 +237,51 @@ class RefreshReplayAuditTest extends TestCase
         });
         $this->rejectAudit();
         try {
-            app(AuthService::class)->refresh($replay);
-            $this->fail('Mandatory replay audit must fail.');
-        } catch (QueryException $exception) {
-            $this->assertStringContainsString('Synthetic replay audit failure', $exception->getMessage());
+            DB::beginTransaction();
+            $this->assertInvalidRefresh($replay);
+            $this->assertSame(1, SecurityAuditIntent::count());
+            $this->assertSame([], $seen);
+            DB::rollBack();
         } finally {
             $this->allowAudit();
         }
         $this->assertSame($before, $this->snapshot($user));
         $this->assertSame([], $seen);
-        $this->assertSame(0, DB::transactionLevel());
-        $this->assertSame('synthetic-existing-reset-otp', Cache::get($this->otpKey($user)));
-        $this->app['auth']->forgetGuards();
-        $this->getJson('/api/v1/auth/user', ['Authorization' => 'Bearer '.$current[0]['access_token']])->assertOk();
+    }
+
+    public function test_revocation_failure_during_audit_outage_rolls_back_the_pending_intent(): void
+    {
+        [$user, $replay] = $this->credentials();
+        $before = $this->snapshot($user);
+        $seen = [];
+        Event::listen(CredentialsRevoked::class, function ($event) use (&$seen): void {
+            $seen[] = $event->userId;
+        });
+        Log::spy();
+        $this->rejectAudit();
+        if (DB::getDriverName() === 'pgsql') {
+            DB::unprepared("CREATE FUNCTION reject_outage_revoke() RETURNS trigger LANGUAGE plpgsql AS \$\$ BEGIN RAISE EXCEPTION 'Synthetic outage revocation failure' USING ERRCODE = '23514'; RETURN OLD; END; \$\$");
+            DB::unprepared('CREATE TRIGGER reject_outage_revoke BEFORE DELETE ON personal_access_tokens FOR EACH ROW EXECUTE FUNCTION reject_outage_revoke()');
+        } else {
+            DB::unprepared("CREATE TRIGGER reject_outage_revoke BEFORE DELETE ON personal_access_tokens BEGIN SELECT RAISE(ABORT, 'Synthetic outage revocation failure'); END");
+        }
+        try {
+            app(AuthService::class)->refresh($replay);
+            $this->fail('Revocation fault must not report committed containment.');
+        } catch (QueryException $exception) {
+            $this->assertStringContainsString('Synthetic outage revocation failure', $exception->getMessage());
+        } finally {
+            $this->allowAudit();
+            if (DB::getDriverName() === 'pgsql') {
+                DB::unprepared('DROP TRIGGER reject_outage_revoke ON personal_access_tokens');
+                DB::unprepared('DROP FUNCTION reject_outage_revoke()');
+            } else {
+                DB::unprepared('DROP TRIGGER reject_outage_revoke');
+            }
+        }
+        $this->assertSame($before, $this->snapshot($user));
+        $this->assertSame([], $seen);
+        Log::shouldNotHaveReceived('error');
     }
 
     public function test_replay_commits_mandatory_audit_and_all_revocation_before_the_422_rejection(): void

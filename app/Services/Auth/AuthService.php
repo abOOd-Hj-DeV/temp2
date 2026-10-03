@@ -467,9 +467,7 @@ class AuthService
                     'user_id' => $user->id,
                     'family_id' => $replayed->family_id,
                 ]);
-                $this->audit->record($user, AuditLogService::REFRESH_TOKEN_REPLAYED, $user->id, [
-                    'family_id' => $replayed->family_id,
-                ]);
+                app(ReplayAuditService::class)->record($user, $replayed);
                 $user->revokeAllTokens();
             });
 
