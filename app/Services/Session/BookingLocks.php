@@ -11,7 +11,7 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
 
 /**
- * Transaction lock order: patient -> subscriptions (id) -> therapist users (id) -> therapists (user_id)
+ * Transaction lock order: patient user -> patient -> subscriptions (id) -> therapist users (id) -> therapists (user_id)
  * -> switch -> sessions (id) -> payments. Never acquire an earlier lock later.
  * The patient lock serializes package/assignment/schedule changes; therapist
  * locks serialize capacity and slots across patients. Call inside a transaction.
@@ -20,6 +20,8 @@ final class BookingLocks
 {
     public static function patient(string $id): Patient
     {
+        User::whereKey($id)->lockForUpdate()->firstOrFail();
+
         return Patient::whereKey($id)->lockForUpdate()->firstOrFail();
     }
 
