@@ -60,6 +60,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->call(fn () => app(OperationsHealth::class)->heartbeat('scheduler'))
             ->everyMinute()->name('ops-scheduler-heartbeat');
         $schedule->command('ops:outbox-replay')->everyMinute()->withoutOverlapping();
+        $schedule->command('clinical:deliver-notifications')->everyMinute()->withoutOverlapping();
         $schedule->command('ops:monitor')->everyFiveMinutes()->withoutOverlapping();
         // Remove accounts that never completed OTP verification within 24h.
         $schedule->job(new CleanupUnverifiedUsersJob)->hourly();

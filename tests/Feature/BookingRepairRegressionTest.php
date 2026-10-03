@@ -22,18 +22,18 @@ use App\Services\Wallet\WalletService;
 use Database\Seeders\PackageSeeder;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\QueryException;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use Tests\Concerns\CommittedDatabase;
 use Tests\TestCase;
 
 class BookingRepairRegressionTest extends TestCase
 {
-    use RefreshDatabase;
+    use CommittedDatabase;
 
     private int $sequence = 0;
 
@@ -44,7 +44,7 @@ class BookingRepairRegressionTest extends TestCase
         Http::preventStrayRequests();
         Queue::fake();
         Storage::fake('booking-proofs');
-        config(['sakina.uploads_disk' => 'booking-proofs', 'sakina.package_policy.allow_pay_per_session' => false]);
+        config(['app.key' => 'base64:'.base64_encode(random_bytes(32)), 'sakina.uploads_disk' => 'booking-proofs', 'sakina.package_policy.allow_pay_per_session' => false]);
         $this->mock(NotificationService::class, fn ($mock) => $mock->shouldReceive('deliver')->zeroOrMoreTimes());
     }
 

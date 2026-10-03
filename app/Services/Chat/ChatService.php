@@ -13,6 +13,8 @@ use App\Models\Patient;
 use App\Models\Therapist;
 use App\Models\User;
 use App\Services\AuditLogService;
+use App\Services\Files\AccountFileFence;
+use App\Services\Files\RollbackFileCleanup;
 use App\Services\Files\SecureFileService;
 use App\Services\NotificationService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -87,18 +89,24 @@ class ChatService
         [$patientId, $therapistId] = $this->pairFor($actor, $counterpartId);
 
         try {
-            $conversation = DB::transaction(fn () => Conversation::create([
-                'patient_id' => $patientId,
-                'therapist_id' => $therapistId,
-                'status' => Conversation::STATUS_ACTIVE,
-            ]));
+            $conversation = DB::transaction(function () use ($actor, $patientId, $therapistId) {
+                AccountFileFence::lock([$patientId, $therapistId], requireActive: false);
+                if (! $this->isCurrentCareRelationship($patientId, $therapistId)) {
+                    throw new NotFoundHttpException('Conversation not found.');
+                }
+                $thread = Conversation::create([
+                    'patient_id' => $patientId, 'therapist_id' => $therapistId,
+                    'status' => Conversation::STATUS_ACTIVE,
+                ]);
+                $this->audit->record($actor, AuditLogService::CONVERSATION_OPENED, $thread->id, [
+                    'patient_id' => $patientId, 'therapist_id' => $therapistId,
+                ]);
+
+                return $thread;
+            });
         } catch (UniqueConstraintViolationException) {
             return Conversation::where('patient_id', $patientId)->where('therapist_id', $therapistId)->firstOrFail();
         }
-
-        $this->audit->record($actor, AuditLogService::CONVERSATION_OPENED, $conversation->id, [
-            'patient_id' => $patientId, 'therapist_id' => $therapistId,
-        ]);
 
         return $conversation;
     }
@@ -128,55 +136,39 @@ class ChatService
 
         $type = $attachment === null ? null : $this->classifyAttachment($attachment);
 
-        $conversation = $this->open($actor, $counterpartId);
-        $this->assertSendable($conversation);
-
-        $stored = $attachment === null ? null : $this->storeAttachment($conversation, $attachment, $type);
-        $receiverId = $conversation->counterpartId($actor);
-
-        try {
-            [$message, $unreadBefore] = DB::transaction(function () use ($actor, $conversation, $content, $stored, $receiverId) {
-                $locked = Conversation::whereKey($conversation->id)->lockForUpdate()->firstOrFail();
-                $this->assertSendable($locked);
-
-                $unreadBefore = $locked->messages()->where('receiver_id', $receiverId)->where('is_read', false)->count();
-
-                $message = $locked->messages()->create([
-                    'sender_id' => $actor->id,
-                    'receiver_id' => $receiverId,
-                    'content' => $content,
-                    'timestamp' => now(),
-                    'is_read' => false,
-                ] + ($stored ?? []));
-
-                $locked->forceFill(['last_message_at' => $message->timestamp])->save();
-
-                return [$message, $unreadBefore];
-            });
-        } catch (\Throwable $e) {
-            if ($stored !== null) {
-                $this->files->discard($stored['file_path']);
+        $this->find($actor, $counterpartId); // Preserve non-enumerating 404 before locking.
+        $message = DB::transaction(function () use ($actor, $counterpartId, $content, $attachment, $type) {
+            AccountFileFence::lock([$actor->id, $counterpartId], requireActive: false);
+            $conversation = $this->open($actor, $counterpartId);
+            $locked = Conversation::whereKey($conversation->id)->lockForUpdate()->firstOrFail();
+            if (! $this->canSend($locked)) {
+                return null; // Commit relationship closure before returning the conflict.
             }
+            $receiverId = $locked->counterpartId($actor);
+            $stored = $attachment === null ? null : $this->storeAttachment($locked, $attachment, $type);
+            $unreadBefore = $locked->messages()->where('receiver_id', $receiverId)->where('is_read', false)->count();
+            $message = $locked->messages()->create([
+                'sender_id' => $actor->id, 'receiver_id' => $receiverId,
+                'content' => $content, 'timestamp' => now(), 'is_read' => false,
+            ] + ($stored ?? []));
+            $locked->forceFill(['last_message_at' => $message->timestamp])->save();
+            if ($stored !== null) {
+                $this->audit->record($actor, AuditLogService::CHAT_ATTACHMENT_SENT, $message->id, [
+                    'conversation_id' => $conversation->id,
+                    'attachment_type' => $stored['attachment_type'],
+                    'attachment_mime' => $stored['attachment_mime'],
+                    'attachment_size' => $stored['attachment_size'],
+                ]);
+            }
+            if ($unreadBefore === 0) {
+                $this->notifications->deliver('chatMessageReceived', $message);
+            }
+            DB::afterCommit(fn () => $this->broadcast(new MessageSent($message)));
 
-            throw $e;
-        }
+            return $message;
+        });
 
-        if ($stored !== null) {
-            $this->audit->record($actor, AuditLogService::CHAT_ATTACHMENT_SENT, $message->id, [
-                'conversation_id' => $conversation->id,
-                'attachment_type' => $stored['attachment_type'],
-                'attachment_mime' => $stored['attachment_mime'],
-                'attachment_size' => $stored['attachment_size'],
-            ]);
-        }
-
-        $this->broadcast(new MessageSent($message));
-
-        if ($unreadBefore === 0) {
-            $this->notifications->deliver('chatMessageReceived', $message);
-        }
-
-        return $message;
+        return $message ?? throw new ConflictException('This conversation is closed.');
     }
 
     /** Mark every message addressed to the actor as read; returns how many changed. */
@@ -315,15 +307,13 @@ class ChatService
      * Sending requires an open thread whose pair is still the active care
      * relationship; a thread that has silently outlived it is closed here.
      */
-    private function assertSendable(Conversation $conversation): void
+    private function canSend(Conversation $conversation): bool
     {
         if ($conversation->isActive() && ! $this->isCurrentCareRelationship($conversation->patient_id, $conversation->therapist_id)) {
             $conversation->forceFill(['status' => Conversation::STATUS_CLOSED, 'closed_at' => now()])->save();
         }
 
-        if (! $conversation->isActive()) {
-            throw new ConflictException('This conversation is closed.');
-        }
+        return $conversation->isActive();
     }
 
     private function normalizeContent(?string $content): ?string
@@ -382,6 +372,8 @@ class ChatService
 
             throw ValidationException::withMessages(['attachment' => __('The attachment could not be stored. Please retry.')]);
         }
+
+        RollbackFileCleanup::register($this->files->disk(), $path);
 
         return [
             'file_path' => $path,

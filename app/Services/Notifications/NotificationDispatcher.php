@@ -6,6 +6,7 @@ use App\Jobs\BroadcastStoredNotificationJob;
 use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\NotificationLog;
 use App\Models\User;
+use App\Services\Files\AccountFileFence;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Notifications\Notification;
@@ -48,7 +49,11 @@ class NotificationDispatcher
         $notification->id = $id;
 
         try {
-            DB::transaction(function () use ($user, $notification, $eventKey) {
+            $created = DB::transaction(function () use ($user, $notification, $eventKey) {
+                $user = User::whereKey($user->id)->lockForUpdate()->first();
+                if (! $user || ! $user->is_active || AccountFileFence::erasing($user->id, $user)) {
+                    return false;
+                }
                 $user->notifyNow($notification, ['database']);
 
                 NotificationLog::create($this->row($user, NotificationLog::CHANNEL_IN_APP, $eventKey, NotificationLog::STATUS_SENT, [
@@ -56,12 +61,14 @@ class NotificationDispatcher
                 ]) + ['attempts' => 1, 'sent_at' => now()]);
 
                 $this->outbox->stage(new BroadcastStoredNotificationJob($user->id, $notification->id), 'broadcast:'.$notification->id);
+
+                return true;
             });
         } catch (UniqueConstraintViolationException) {
             return false;
         }
 
-        return true;
+        return $created;
     }
 
     /**
@@ -77,6 +84,9 @@ class NotificationDispatcher
 
         DB::transaction(function () use ($user, $message, $eventKey, $context): void {
             $recipient = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            if (! $recipient->is_active || AccountFileFence::erasing($recipient->id, $recipient)) {
+                return;
+            }
             $log = NotificationLog::where('user_id', $recipient->id)
                 ->where('channel', NotificationLog::CHANNEL_WHATSAPP)->where('event_key', $eventKey)->first();
 

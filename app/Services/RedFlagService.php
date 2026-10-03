@@ -79,7 +79,12 @@ class RedFlagService
             $existing = $this->openFlag($patientId, $type);
 
             if ($existing && ! $this->isStale($existing)) {
-                return $this->merge($existing, $assessmentId, $priority);
+                $merged = $this->merge($existing, $assessmentId, $priority);
+                if ($merged->priorityRaised) {
+                    $this->notifications->deliver('redFlagPriorityRaised', $merged);
+                }
+
+                return $merged;
             }
 
             if ($existing) {
@@ -101,15 +106,10 @@ class RedFlagService
             ]);
 
             $created->wasRecentlyCreated = true;
+            $this->notifications->deliver('redFlagRaised', $created);
 
             return $created;
         });
-
-        if ($flag->wasRecentlyCreated) {
-            $this->notifications->deliver('redFlagRaised', $flag);
-        } elseif ($flag->priorityRaised) {
-            $this->notifications->deliver('redFlagPriorityRaised', $flag);
-        }
 
         Log::info('Red flag '.($flag->wasRecentlyCreated ? 'created' : 'merged'), [
             'red_flag_id' => $flag->id,

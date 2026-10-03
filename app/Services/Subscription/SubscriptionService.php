@@ -12,13 +12,14 @@ use App\Repositories\Contracts\SessionRepositoryInterface;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\Billing\PaymentReviewService;
+use App\Services\Files\AccountFileFence;
+use App\Services\Files\RollbackFileCleanup;
 use App\Services\Package\PackageService;
 use App\Services\Session\BookingLocks;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 
 class SubscriptionService
@@ -43,10 +44,11 @@ class SubscriptionService
             ?? throw ValidationException::withMessages(['package_id' => 'The selected package is not available.']);
         $price = (float) $package->price;
         $disk = config('sakina.uploads_disk', 'local');
-        $path = PaymentReviewService::storeProof($proof, "payment-proofs/{$patient->user_id}", $disk);
-
         try {
-            $result = DB::transaction(function () use ($patient, $package, $path, $price) {
+            $result = DB::transaction(function () use ($patient, $package, $proof, $price, $disk) {
+                AccountFileFence::lock([$patient->user_id]);
+                $path = PaymentReviewService::storeProof($proof, "payment-proofs/{$patient->user_id}", $disk);
+                RollbackFileCleanup::register($disk, $path);
                 // Serialise concurrent submissions from the same patient.
                 $patient = BookingLocks::patient($patient->user_id);
                 BookingLocks::subscriptions($patient);
@@ -87,11 +89,7 @@ class SubscriptionService
                 return ['subscription' => $subscription, 'payment' => $payment];
             });
         } catch (UniqueConstraintViolationException) {
-            Storage::disk($disk)->delete($path);
             throw new ConflictException('You already have a pending or active subscription.');
-        } catch (\Throwable $e) {
-            Storage::disk($disk)->delete($path);
-            throw $e;
         }
 
         return $result;

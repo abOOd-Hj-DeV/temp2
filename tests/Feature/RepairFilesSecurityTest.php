@@ -17,7 +17,6 @@ use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Broadcasting\BroadcastEvent;
 use Illuminate\Contracts\Broadcasting\Factory;
 use Illuminate\Filesystem\FilesystemAdapter;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -28,11 +27,12 @@ use Laravel\Sanctum\Sanctum;
 use League\Flysystem\UnableToDeleteFile;
 use League\Flysystem\UnableToWriteFile;
 use Mockery;
+use Tests\Concerns\CommittedDatabase;
 use Tests\TestCase;
 
 class RepairFilesSecurityTest extends TestCase
 {
-    use RefreshDatabase;
+    use CommittedDatabase;
 
     private User $patient;
 

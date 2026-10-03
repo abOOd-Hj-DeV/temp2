@@ -4,10 +4,13 @@ namespace App\Jobs;
 
 use App\Models\NotificationLog;
 use App\Models\TherapySession;
+use App\Models\User;
+use App\Services\Files\AccountFileFence;
 use App\Services\Messaging\WhatsAppSenderInterface;
 use App\Support\SessionClock;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -34,6 +37,34 @@ class SendWhatsAppMessageJob implements ShouldQueue
     }
 
     public function handle(WhatsAppSenderInterface $whatsApp): void
+    {
+        if (isset($this->context['notification_log_id'])) {
+            $error = null;
+            DB::transaction(function () use ($whatsApp, &$error): void {
+                $log = $this->log();
+                if ($log === null) {
+                    return; // Erasure removed the durable recipient ledger.
+                }
+                $user = User::whereKey($log->user_id)->lockForUpdate()->first();
+                if (! $user || ! $user->is_active || AccountFileFence::erasing($user->id, $user)) {
+                    return;
+                }
+                try {
+                    $this->deliver($whatsApp);
+                } catch (\Throwable $e) {
+                    $error = $e; // Commit retry ledger state, then propagate to the worker.
+                }
+            });
+            if ($error !== null) {
+                throw $error;
+            }
+
+            return;
+        }
+        $this->deliver($whatsApp);
+    }
+
+    private function deliver(WhatsAppSenderInterface $whatsApp): void
     {
         if (isset($this->context['schedule_key'], $this->context['session_id'])) {
             $session = TherapySession::find($this->context['session_id']);

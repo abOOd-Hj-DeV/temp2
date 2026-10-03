@@ -3,6 +3,7 @@
 namespace App\Services\Files;
 
 use App\Enums\UserRole;
+use App\Models\Conversation;
 use App\Models\DocumentRequest;
 use App\Models\Message;
 use App\Models\Payment;
@@ -11,8 +12,10 @@ use App\Models\Therapist;
 use App\Models\User;
 use App\Services\AuditLogService;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
@@ -35,19 +38,24 @@ class SecureFileService
 
     public function upload(User $user, UploadedFile $file, string $purpose): array
     {
-        $path = $file->store("uploads/{$user->id}/{$purpose}", ['disk' => $this->disk()]);
+        return DB::transaction(function () use ($user, $file, $purpose) {
+            AccountFileFence::lock([$user->id]);
+            $path = $file->store("uploads/{$user->id}/{$purpose}", ['disk' => $this->disk()]);
 
-        if (! is_string($path) || $path === '') {
-            throw new ServiceUnavailableHttpException(5, 'The file could not be stored. Please retry.');
-        }
+            if (! is_string($path) || $path === '') {
+                throw new ServiceUnavailableHttpException(5, 'The file could not be stored. Please retry.');
+            }
 
-        return [
-            'path' => $path,
-            'purpose' => $purpose,
-            'original_name' => self::safeOriginalName($file->getClientOriginalName()),
-            'mime_type' => $file->getClientMimeType(),
-            'size' => $file->getSize(),
-        ];
+            RollbackFileCleanup::register($this->disk(), $path);
+
+            return [
+                'path' => $path,
+                'purpose' => $purpose,
+                'original_name' => self::safeOriginalName($file->getClientOriginalName()),
+                'mime_type' => $file->getClientMimeType(),
+                'size' => $file->getSize(),
+            ];
+        });
     }
 
     /**
@@ -71,12 +79,17 @@ class SecureFileService
     /**
      * Resolve and authorize a download; returns the sanitized storage path.
      */
-    public function authorizeDownload(User $user, string $rawPath): string
+    public function authorizeDownload(User $user, string $rawPath, bool $record = true): string
     {
         $path = $this->sanitize($rawPath);
+        AccountFileFence::lock([$user->id]);
+        [$family, $ownerId] = explode('/', $path, 3);
+        if ($family !== 'chat' && $family !== 'support' && AccountFileFence::erasing($ownerId)) {
+            throw new NotFoundHttpException('File not found.');
+        }
 
         if (str_starts_with($path, 'support/')) {
-            return $this->authorizeSupportAttachment($user, $path);
+            return $this->authorizeSupportAttachment($user, $path, $record);
         }
 
         if (! $this->canAccess($user, $path)) {
@@ -88,19 +101,60 @@ class SecureFileService
             throw new NotFoundHttpException('File not found.');
         }
 
-        $this->audit->record($user, AuditLogService::FILE_DOWNLOADED, null, ['path' => $path]);
+        if ($record) {
+            $this->audit->record($user, AuditLogService::FILE_DOWNLOADED, null, ['path' => $path]);
+        }
 
         return $path;
     }
 
+    /** Re-authorize under account locks when bytes are emitted, not just when headers are built. */
+    public function download(User $user, string $rawPath, ?string $name = null, array $headers = []): StreamedResponse
+    {
+        $rawPath = $this->sanitize($rawPath);
+        $path = $this->authorizeDownload($user, $rawPath);
+        $response = Storage::disk($this->disk())->download($path, $name, $headers + [
+            'Cache-Control' => 'private, no-store',
+            'X-Content-Type-Options' => 'nosniff',
+            'Content-Security-Policy' => "default-src 'none'",
+        ]);
+        $emit = $response->getCallback();
+        $response->setCallback(function () use ($user, $rawPath, $path, $emit): void {
+            DB::transaction(function () use ($user, $rawPath, $path, $emit): void {
+                [$family, $id] = explode('/', $rawPath, 3);
+                $ids = [$user->id];
+                if ($family === 'chat') {
+                    $thread = Conversation::find($id) ?? throw new NotFoundHttpException('File not found.');
+                    $ids = array_merge($ids, [$thread->patient_id, $thread->therapist_id]);
+                } elseif ($family === 'support') {
+                    $ticket = Support::find($id) ?? throw new NotFoundHttpException('File not found.');
+                    $ids[] = $ticket->user_id;
+                } else {
+                    $ids[] = $id;
+                }
+                AccountFileFence::lock($ids, requireActive: false);
+                if ($this->authorizeDownload($user->fresh(), $rawPath, record: false) !== $path) {
+                    throw new NotFoundHttpException('File not found.');
+                }
+                $emit();
+            });
+        });
+
+        return $response;
+    }
+
     public function canDownloadSupportAttachment(User $user, Support $ticket): bool
     {
+        if (AccountFileFence::erasing($ticket->user_id)) {
+            return false;
+        }
+
         return $ticket->user_id === $user->id
             || in_array($user->role, [UserRole::ADMIN, UserRole::SUPER_ADMIN, UserRole::CLINICAL_SUPERVISOR], true)
             || ($user->role === UserRole::SUPPORT_AGENT && $ticket->assigned_to === $user->id);
     }
 
-    private function authorizeSupportAttachment(User $user, string $locator): string
+    private function authorizeSupportAttachment(User $user, string $locator, bool $record): string
     {
         if (! preg_match('#^support/([0-9a-f-]{36})/attachment$#i', $locator, $matches)) {
             throw new NotFoundHttpException('File not found.');
@@ -117,7 +171,9 @@ class SecureFileService
             throw new NotFoundHttpException('File not found.');
         }
 
-        $this->audit->record($user, AuditLogService::FILE_DOWNLOADED, $ticket->id, ['purpose' => 'support']);
+        if ($record) {
+            $this->audit->record($user, AuditLogService::FILE_DOWNLOADED, $ticket->id, ['purpose' => 'support']);
+        }
 
         return $path;
     }

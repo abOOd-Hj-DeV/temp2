@@ -5,6 +5,7 @@ namespace App\Services\Patient;
 use App\Models;
 use App\Models\User;
 use App\Services\AuditLogService;
+use App\Services\Notifications\NotificationOutboxService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
@@ -36,6 +37,7 @@ class AccountAnonymizer
                 return $existing;
             }
             $identifiers = array_filter([$user->name, $user->email, $user->whatsapp_number, $user->patient?->full_name]);
+            app(NotificationOutboxService::class)->discardForRecipient($user);
             $conversations = Models\Conversation::where('patient_id', $user->id)->orWhere('therapist_id', $user->id)->get();
             $messageQuery = Models\Message::where(function ($q) use ($user, $conversations) {
                 $q->whereIn('conversation_id', $conversations->pluck('id'))->orWhere('sender_id', $user->id)->orWhere('receiver_id', $user->id);
@@ -103,6 +105,11 @@ class AccountAnonymizer
                 $user->therapist->forceFill(['license_file_path' => null])->save();
             }
             $user->forceFill(['anonymized_at' => now(), 'deletion_scheduled_at' => null, 'is_active' => false])->save();
+            // Booking's immutable snapshots follow the existing patient-update
+            // erasure trigger, only after the irreversible purge has completed.
+            // Raw timestamp update is intentional: Eloquent touch may be a no-op
+            // when disabling and completion share the same second/frozen clock.
+            DB::table('patients')->where('user_id', $user->id)->update(['updated_at' => now()]);
             DB::table('clinical_erasure_plans')->where('user_id', $user->id)->update([
                 'completed_at' => now(), 'updated_at' => now(), 'paths' => '[]', 'directories' => '[]',
             ]);

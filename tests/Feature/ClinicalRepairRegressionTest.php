@@ -19,11 +19,9 @@ use App\Services\Therapist\ParallelLayerService;
 use App\Services\Therapist\TherapistClientService;
 use App\Services\Therapist\TherapistModuleService;
 use Database\Seeders\RolePermissionSeeder;
-use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Encryption\Encrypter;
 use Illuminate\Filesystem\FilesystemAdapter;
-use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -32,17 +30,12 @@ use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Tests\Concerns\CommittedDatabase;
 use Tests\TestCase;
 
 class ClinicalRepairRegressionTest extends TestCase
 {
-    use DatabaseMigrations;
-
-    public function runDatabaseMigrations(): void
-    {
-        $this->artisan('migrate:fresh')->assertSuccessful();
-        $this->app[Kernel::class]->setArtisan(null);
-    }
+    use CommittedDatabase;
 
     private User $user;
 

@@ -33,8 +33,6 @@ use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Broadcasting\Broadcaster;
 use Illuminate\Contracts\Broadcasting\Factory;
 use Illuminate\Database\QueryException;
-use Illuminate\Foundation\Testing\DatabaseMigrations;
-use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Notifications\Events\BroadcastNotificationCreated;
@@ -48,19 +46,12 @@ use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use League\Flysystem\AwsS3V3\AwsS3V3Adapter;
 use Mockery;
+use Tests\Concerns\CommittedDatabase;
 use Tests\TestCase;
 
 class OpsRepairRegressionTest extends TestCase
 {
-    use DatabaseMigrations;
-
-    public function runDatabaseMigrations(): void
-    {
-        // Baseline rollback makes nullable subscription dates non-null before dropping
-        // the table. Fresh isolated schemas avoid that unrelated rollback defect.
-        $this->refreshTestDatabase();
-        $this->beforeApplicationDestroyed(fn () => RefreshDatabaseState::$migrated = false);
-    }
+    use CommittedDatabase;
 
     private User $patientUser;
 

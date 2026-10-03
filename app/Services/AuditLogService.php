@@ -15,6 +15,8 @@ class AuditLogService
 {
     public const PAYMENT_REVIEWED = 'payment.reviewed';
 
+    public const PAYMENT_PROOF_SUBMITTED = 'payment.proof_submitted';
+
     public const THERAPIST_APPROVAL_DECIDED = 'therapist.approval_decided';
 
     public const THERAPIST_LIMIT_CHANGED = 'therapist.limit_changed';

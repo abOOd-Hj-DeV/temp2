@@ -10,7 +10,6 @@ use App\Services\AuditLogService;
 use App\Services\Messaging\WhatsAppSenderInterface;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Routing\Middleware\ThrottleRequests;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -95,7 +94,7 @@ class StaffAccountTest extends TestCase
 
     public function test_activation_code_is_single_use_expiring_and_attempt_limited(): void
     {
-        $this->withoutMiddleware(ThrottleRequests::class);
+        $this->travelTo(now()->setDate(2026, 10, 3)->setTime(12, 0));
         $admin = $this->makeUser('super_admin', '+963900000501');
         Sanctum::actingAs($admin, ['*'], 'api');
 
@@ -115,7 +114,10 @@ class StaffAccountTest extends TestCase
         $activate('WRONGCD9')->assertStatus(422);
         $this->assertNotNull(AccountInvitation::where('user_id', $userId)->first()->revoked_at);
 
-        // Even the right code is now useless.
+        // The transport throttle also denies the sixth attempt. After its
+        // window clears, the permanently revoked invitation still rejects it.
+        $activate($code)->assertStatus(429);
+        $this->travel(61)->seconds();
         $activate($code)->assertStatus(422);
         $this->assertNull(User::find($userId)->phone_verified_at);
 
@@ -138,7 +140,8 @@ class StaffAccountTest extends TestCase
 
         $therapist = User::find($userId);
         $this->assertSame('dr.new@example.com', $therapist->email);
-        $this->assertSame('approved', $therapist->therapist->approval_status->value);
+        // Activation verifies credentials, not clinical approval/licence review.
+        $this->assertSame('pending', $therapist->therapist->approval_status->value);
         $this->assertSame(15, $therapist->therapist->clients_limit);
         $this->assertTrue($therapist->hasRole('therapist'));
     }

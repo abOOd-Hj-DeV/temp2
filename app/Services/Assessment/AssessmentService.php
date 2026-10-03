@@ -69,14 +69,13 @@ class AssessmentService
 
                 $this->patients->updateAssessmentScore($patient->user_id, $score);
                 $this->escalateIfNeeded($patient, $assessment, $answers);
+                $this->notifications->deliver('assessmentCompleted', $patient, $assessment);
 
                 return $assessment;
             });
         } catch (UniqueConstraintViolationException) {
             throw new ConflictException("A {$type->value} assessment was already submitted today.");
         }
-
-        $this->notifications->deliver('assessmentCompleted', $patient, $assessment);
 
         return [
             'assessment' => $this->toArray($assessment),

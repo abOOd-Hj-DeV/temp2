@@ -14,6 +14,8 @@ use App\Models\User;
 use App\Repositories\Contracts\PaymentRepositoryInterface;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
+use App\Services\Files\AccountFileFence;
+use App\Services\Files\RollbackFileCleanup;
 use App\Services\NotificationService;
 use App\Services\Session\BookingLocks;
 use App\Services\Session\SessionService;
@@ -64,10 +66,11 @@ class PaymentReviewService
     public function submitSessionProof(TherapySession $session, UploadedFile $proof): Payment
     {
         $disk = config('sakina.uploads_disk', 'local');
-        $path = self::storeProof($proof, "payment-proofs/{$session->patient_id}", $disk);
-
         try {
-            return DB::transaction(function () use ($session, $path) {
+            return DB::transaction(function () use ($session, $proof, $disk) {
+                AccountFileFence::lock([$session->patient_id]);
+                $path = self::storeProof($proof, "payment-proofs/{$session->patient_id}", $disk);
+                RollbackFileCleanup::register($disk, $path);
                 $locked = BookingLocks::session($session->id);
 
                 if ($locked->payment_status !== PaymentStatus::PENDING) {
@@ -88,18 +91,17 @@ class PaymentReviewService
                     ]);
                 }
 
-                return $this->createPayment(
+                $payment = $this->createPayment(
                     amount: (float) $locked->price,
                     proofPath: $path,
                     sessionId: $locked->id,
                 );
+                $this->audit->record($locked->patient->user, AuditLogService::PAYMENT_PROOF_SUBMITTED, $payment->id, ['session_id' => $locked->id]);
+
+                return $payment;
             });
         } catch (UniqueConstraintViolationException) {
-            Storage::disk($disk)->delete($path);
             throw new ConflictException('A payment for this session is already under review.');
-        } catch (\Throwable $e) {
-            Storage::disk($disk)->delete($path);
-            throw $e;
         }
     }
 
@@ -187,10 +189,10 @@ class PaymentReviewService
                 'therapy_session_id' => $locked->therapy_session_id,
             ]);
 
+            $this->notifications->deliver('paymentReviewed', $locked->fresh(['subscription.patient.user', 'session.patient.user']));
+
             return $locked;
         });
-
-        $this->notifications->deliver('paymentReviewed', $payment->fresh(['subscription.patient.user', 'session.patient.user']));
 
         return $payment->refresh();
     }

@@ -9,6 +9,7 @@ use App\Models\Support;
 use App\Models\SupportReply;
 use App\Models\User;
 use App\Services\AuditLogService;
+use App\Services\Files\AccountFileFence;
 use App\Services\Files\SecureFileService;
 use App\Services\NotificationService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -41,37 +42,23 @@ class SupportService
 
     public function create(User $user, array $data, ?UploadedFile $file): Support
     {
-        $path = null;
-        if ($file) {
-            $stored = $this->files->upload($user, $file, 'support');
-            $path = $stored['path'];
-        }
+        return DB::transaction(function () use ($user, $data, $file) {
+            AccountFileFence::lock([$user->id]);
+            $path = $file ? $this->files->upload($user, $file, 'support')['path'] : null;
+            $ticket = Support::create([
+                'id' => (string) Str::uuid(),
+                'user_id' => $user->id,
+                'type' => SupportType::from($data['type'])->value,
+                'subject' => $data['subject'] ?? null,
+                'description' => $data['description'],
+                'file_path' => $path,
+                'status' => 'open',
+            ]);
 
-        try {
-            $ticket = DB::transaction(function () use ($user, $data, $path) {
-                $ticket = Support::create([
-                    'id' => (string) Str::uuid(),
-                    'user_id' => $user->id,
-                    'type' => SupportType::from($data['type'])->value,
-                    'subject' => $data['subject'] ?? null,
-                    'description' => $data['description'],
-                    'file_path' => $path,
-                    'status' => 'open',
-                ]);
+            $this->audit->record($user, AuditLogService::SUPPORT_TICKET_CREATED, $ticket->id);
 
-                $this->audit->record($user, AuditLogService::SUPPORT_TICKET_CREATED, $ticket->id);
-
-                return $ticket;
-            });
-        } catch (\Throwable $e) {
-            if ($path !== null) {
-                $this->files->discard($path);
-            }
-
-            throw $e;
-        }
-
-        return $ticket;
+            return $ticket;
+        });
     }
 
     public function mine(User $user, int $perPage = 15): LengthAwarePaginator
@@ -146,6 +133,7 @@ class SupportService
         }
 
         $reply = DB::transaction(function () use ($author, $ticket, $body) {
+            AccountFileFence::lock([$author->id, $ticket->user_id]);
             $reply = SupportReply::create([
                 'support_id' => $ticket->id,
                 'user_id' => $author->id,
@@ -159,10 +147,10 @@ class SupportService
                 'from_staff' => $reply->is_staff,
             ]);
 
+            $this->notifications->deliver('supportReplied', $reply->load('ticket'));
+
             return $reply;
         });
-
-        $this->notifications->deliver('supportReplied', $reply->load('ticket'));
 
         return $reply;
     }

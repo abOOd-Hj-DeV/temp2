@@ -7,6 +7,7 @@ use App\Exceptions\ConflictException;
 use App\Models\DocumentRequest;
 use App\Models\User;
 use App\Services\AuditLogService;
+use App\Services\Files\AccountFileFence;
 use App\Services\Files\SecureFileService;
 use App\Services\NotificationService;
 use Illuminate\Http\UploadedFile;
@@ -62,60 +63,51 @@ class DocumentRequestService
                 'user_id' => $target->id, 'doc_type' => $request->doc_type,
             ]);
 
+            $this->notifications->deliver('documentRequested', $request);
+
             return $request;
         });
-
-        $this->notifications->deliver('documentRequested', $request);
 
         return $request;
     }
 
     public function upload(User $owner, string $id, UploadedFile $file): DocumentRequest
     {
-        $stored = null;
+        $request = DB::transaction(function () use ($owner, $id, $file) {
+            AccountFileFence::lock([$owner->id]);
+            $request = DocumentRequest::whereKey($id)->where('user_id', $owner->id)->lockForUpdate()->first()
+                ?? throw new NotFoundHttpException('Document request not found.');
 
-        try {
-            $request = DB::transaction(function () use ($owner, $id, $file, &$stored) {
-                $request = DocumentRequest::whereKey($id)->where('user_id', $owner->id)->lockForUpdate()->first()
-                    ?? throw new NotFoundHttpException('Document request not found.');
-
-                if (! $request->acceptsUpload()) {
-                    throw new ConflictException("This request is {$request->status} and no longer accepts uploads.");
-                }
-
-                $previous = $request->file_path;
-                $stored = $this->files->upload($owner, $file, self::UPLOAD_PURPOSE);
-
-                $request->update([
-                    'file_path' => $stored['path'],
-                    'original_name' => $stored['original_name'],
-                    'mime_type' => $stored['mime_type'],
-                    'status' => DocumentRequest::STATUS_SUBMITTED,
-                    'submitted_at' => now(),
-                    'reviewer_id' => null,
-                    'reviewed_at' => null,
-                    'review_note' => null,
-                ]);
-
-                if ($previous && $previous !== $stored['path']) {
-                    DB::afterCommit(fn () => $this->files->discard($previous));
-                }
-
-                $this->audit->record($owner, AuditLogService::DOCUMENT_SUBMITTED, $request->id, [
-                    'doc_type' => $request->doc_type,
-                ]);
-
-                return $request->refresh();
-            });
-        } catch (\Throwable $e) {
-            if ($stored !== null) {
-                $this->files->discard($stored['path']);
+            if (! $request->acceptsUpload()) {
+                throw new ConflictException("This request is {$request->status} and no longer accepts uploads.");
             }
 
-            throw $e;
-        }
+            $previous = $request->file_path;
+            $stored = $this->files->upload($owner, $file, self::UPLOAD_PURPOSE);
 
-        $this->notifications->deliver('documentSubmitted', $request);
+            $request->update([
+                'file_path' => $stored['path'],
+                'original_name' => $stored['original_name'],
+                'mime_type' => $stored['mime_type'],
+                'status' => DocumentRequest::STATUS_SUBMITTED,
+                'submitted_at' => now(),
+                'reviewer_id' => null,
+                'reviewed_at' => null,
+                'review_note' => null,
+            ]);
+
+            if ($previous && $previous !== $stored['path']) {
+                DB::afterCommit(fn () => $this->files->discard($previous));
+            }
+
+            $this->audit->record($owner, AuditLogService::DOCUMENT_SUBMITTED, $request->id, [
+                'doc_type' => $request->doc_type,
+            ]);
+
+            $this->notifications->deliver('documentSubmitted', $request);
+
+            return $request->refresh();
+        });
 
         return $request;
     }
@@ -156,10 +148,10 @@ class DocumentRequestService
                 ['user_id' => $request->user_id, 'doc_type' => $request->doc_type, 'note' => $note],
             );
 
+            $this->notifications->deliver('documentReviewed', $request);
+
             return $request->refresh();
         });
-
-        $this->notifications->deliver('documentReviewed', $request);
 
         return $request;
     }

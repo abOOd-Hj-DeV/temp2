@@ -8,7 +8,6 @@ use App\Services\Chat\ChatService;
 use App\Services\Files\SecureFileService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ChatController extends Controller
@@ -80,7 +79,7 @@ class ChatController extends Controller
     {
         $found = $this->chat->attachment($request->user(), $message);
 
-        return Storage::disk($this->files->disk())->download($found->file_path, $found->attachment_name ?? basename($found->file_path), [
+        return $this->files->download($request->user(), $found->file_path, $found->attachment_name ?? basename($found->file_path), [
             'Cache-Control' => 'private, no-store',
             'Content-Type' => $found->attachment_mime ?? 'application/octet-stream',
             'X-Content-Type-Options' => 'nosniff',

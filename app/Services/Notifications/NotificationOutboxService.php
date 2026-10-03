@@ -4,6 +4,7 @@ namespace App\Services\Notifications;
 
 use App\Jobs\DeliverNotificationOutboxJob;
 use App\Models\NotificationOutbox;
+use App\Models\User;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Crypt;
@@ -29,6 +30,28 @@ class NotificationOutboxService
         });
 
         return $row;
+    }
+
+    /** Erasure must remove operational message bytes, not only their recipient ledger. */
+    public function discardForRecipient(User $user): void
+    {
+        $identifiers = array_filter([$user->id, $user->whatsapp_number, $user->email]);
+        $identifiers = array_merge($identifiers, DB::table('notification_logs')->where('user_id', $user->id)->pluck('id')->all());
+        $serialized = array_map(fn ($id) => serialize((string) $id), $identifiers);
+        NotificationOutbox::whereNotNull('payload')->whereNull('completed_at')->eachById(function ($row) use ($serialized): void {
+            // Do not instantiate jobs/models or execute delivery during erasure.
+            $payload = Crypt::decryptString($row->payload);
+            foreach ($serialized as $identifier) {
+                if (str_contains($payload, $identifier)) {
+                    NotificationOutbox::whereKey($row->id)->whereNull('completed_at')->update([
+                        'payload' => null, 'status' => 'completed', 'completed_at' => now(),
+                        'claim_token' => null, 'lease_until' => null, 'last_error' => 'recipient_erased',
+                    ]);
+
+                    return;
+                }
+            }
+        });
     }
 
     public function replay(int $limit = 100): int

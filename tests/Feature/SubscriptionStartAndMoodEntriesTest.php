@@ -101,6 +101,9 @@ class SubscriptionStartAndMoodEntriesTest extends TestCase
         config(['sakina.mood_alert_threshold' => 3, 'sakina.mood_alert_streak' => 3]);
         Sanctum::actingAs($this->patientUser, ['*'], 'api');
 
+        // Patient-local noon prevents a seconds-based sequence straddling
+        // midnight; retrospective fixture dates use the patient's calendar.
+        $this->travelTo(now($this->patientUser->timezone())->startOfDay()->addHours(12));
         // Three low entries on the same day: one low *day*, no flag.
         foreach ([2, 1, 3] as $i => $score) {
             $this->travelTo(now()->addSeconds($i + 1));
@@ -124,8 +127,8 @@ class SubscriptionStartAndMoodEntriesTest extends TestCase
         $this->assertNotNull($history['entries'][0]['logged_at']);
 
         // Two more low days make three consecutive low days: flag raised once.
-        $this->postJson('/api/v1/mood', ['score' => 2, 'log_date' => now()->subDay()->toDateString()])->assertCreated();
-        $this->postJson('/api/v1/mood', ['score' => 2, 'log_date' => now()->subDays(2)->toDateString()])
+        $this->postJson('/api/v1/mood', ['score' => 2, 'log_date' => now($this->patientUser->timezone())->subDay()->toDateString()])->assertCreated();
+        $this->postJson('/api/v1/mood', ['score' => 2, 'log_date' => now($this->patientUser->timezone())->subDays(2)->toDateString()])
             ->assertCreated()->assertJsonPath('alert_raised', true);
 
         $this->travelTo(now()->addSecond());

@@ -63,31 +63,36 @@ class AuthFlowTest extends TestCase
     {
         $staff = $this->makeStaff('admin');
 
-        // Resend endpoint exists and is generic. (Called first: anonymous
-        // throttles share one bucket per IP, capped by this route's 3/min.)
+        // Anonymous resend cannot generate a staff login OTP without a password challenge.
         $this->postJson('/api/v1/auth/login/2fa/resend', [
             'whatsapp_number' => '+963900000777',
-        ])->assertOk();
+        ])->assertUnprocessable();
+        $this->assertCount(0, $this->sender->messages);
 
         // Password alone gets no token — an OTP goes out instead.
-        $this->postJson('/api/v1/auth/login', [
+        $login = $this->postJson('/api/v1/auth/login', [
             'whatsapp_number' => '+963900000777',
             'password' => 'Secret123!',
         ])->assertOk()
             ->assertJsonPath('requires_2fa', true)
             ->assertJsonMissing(['access_token']);
+        $challenge = $login->json('login_challenge');
+        $this->assertSame(64, strlen($challenge));
         $this->assertNotEmpty($this->sender->messages);
+        $this->postJson('/api/v1/auth/login/2fa/resend', [
+            'whatsapp_number' => '+963900000777', 'login_challenge' => $challenge,
+        ])->assertOk();
 
         // Wrong code rejected.
         $this->postJson('/api/v1/auth/login/2fa', [
             'whatsapp_number' => '+963900000777',
-            'otp' => '000000',
+            'otp' => '000000', 'login_challenge' => $challenge,
         ])->assertUnprocessable();
 
         // Right code mints a usable token.
         $this->postJson('/api/v1/auth/login/2fa', [
             'whatsapp_number' => '+963900000777',
-            'otp' => $this->lastOtp(),
+            'otp' => $this->lastOtp(), 'login_challenge' => $challenge,
         ])->assertOk()
             ->assertJsonStructure(['access_token', 'refresh_token']);
 
@@ -357,7 +362,7 @@ class AuthFlowTest extends TestCase
         ]))->assertCreated();
 
         $this->assertSame(
-            'Changed Name',
+            'Test Patient', // A reregistration must never replace an existing identity.
             User::where('whatsapp_number', '+963900000001')->firstOrFail()->name
         );
     }

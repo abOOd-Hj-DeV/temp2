@@ -7,7 +7,6 @@ use App\Http\Requests\Api\V1\Files\UploadFileRequest;
 use App\Services\Files\SecureFileService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class FileController extends Controller
@@ -30,12 +29,6 @@ class FileController extends Controller
      */
     public function download(Request $request, string $path): StreamedResponse
     {
-        $safe = $this->files->authorizeDownload($request->user(), $path);
-
-        return Storage::disk($this->files->disk())->download($safe, basename($safe), [
-            'Cache-Control' => 'private, no-store',
-            'X-Content-Type-Options' => 'nosniff',
-            'Content-Security-Policy' => "default-src 'none'",
-        ]);
+        return $this->files->download($request->user(), $path, basename($path));
     }
 }

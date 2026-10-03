@@ -19,18 +19,18 @@ use App\Services\Messaging\WhatsAppSenderInterface;
 use App\Services\NotificationService;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Contracts\Filesystem\Filesystem;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
+use Tests\Concerns\CommittedDatabase;
 use Tests\TestCase;
 
 class Weeks1To7HardeningTest extends TestCase
 {
-    use RefreshDatabase;
+    use CommittedDatabase;
 
     private User $patientUser;
 

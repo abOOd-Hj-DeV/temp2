@@ -12,6 +12,9 @@ use App\Models\User;
 use App\Repositories\Contracts\SessionRepositoryInterface;
 use App\Repositories\Contracts\TherapistRepositoryInterface;
 use App\Services\AuditLogService;
+use App\Services\Files\AccountFileFence;
+use App\Services\Files\RollbackFileCleanup;
+use App\Services\Files\SecureFileService;
 use App\Services\NotificationService;
 use App\Support\SessionClock;
 use Illuminate\Http\UploadedFile;
@@ -19,6 +22,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 
 class TherapistService
 {
@@ -221,26 +225,37 @@ class TherapistService
      */
     public function submitForApproval(Therapist $therapist, ?UploadedFile $license = null): Therapist
     {
-        if ($therapist->approval_status === ApprovalStatus::APPROVED) {
-            throw new ConflictException('Your profile is already approved. Contact management to update your licence.');
-        }
+        return DB::transaction(function () use ($therapist, $license) {
+            AccountFileFence::lock([$therapist->user_id]);
+            $therapist = Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
+            if ($therapist->approval_status === ApprovalStatus::APPROVED) {
+                throw new ConflictException('Your profile is already approved. Contact management to update your licence.');
+            }
 
-        if (! $license && ! $therapist->license_file_path) {
-            throw ValidationException::withMessages(['license' => 'A license file is required before submitting for approval.']);
-        }
+            if (! $license && ! $therapist->license_file_path) {
+                throw ValidationException::withMessages(['license' => 'A license file is required before submitting for approval.']);
+            }
 
-        $data = ['approval_status' => ApprovalStatus::PENDING->value];
+            $data = ['approval_status' => ApprovalStatus::PENDING->value];
 
-        if ($license) {
-            $data['license_file_path'] = $license->store(
-                "licenses/{$therapist->user_id}",
-                ['disk' => config('sakina.uploads_disk', 'local')]
-            );
-        }
+            if ($license) {
+                $disk = config('sakina.uploads_disk', 'local');
+                $path = $license->store("licenses/{$therapist->user_id}", ['disk' => $disk]);
+                if (! is_string($path) || $path === '') {
+                    throw new ServiceUnavailableHttpException(5, 'The license could not be stored. Please retry.');
+                }
+                RollbackFileCleanup::register($disk, $path);
+                $data['license_file_path'] = $path;
+                if ($therapist->license_file_path) {
+                    $previous = $therapist->license_file_path;
+                    DB::afterCommit(fn () => app(SecureFileService::class)->discard($previous));
+                }
+            }
 
-        $this->therapists->update($therapist, $data);
+            $this->therapists->update($therapist, $data);
 
-        return $therapist->refresh();
+            return $therapist->refresh();
+        });
     }
 
     /**

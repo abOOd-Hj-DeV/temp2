@@ -14,7 +14,6 @@ use App\Notifications\ChatMessageReceivedNotification;
 use App\Services\Chat\ChatService;
 use App\Services\Patient\AccountAnonymizer;
 use Database\Seeders\RolePermissionSeeder;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\DB;
@@ -22,11 +21,12 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
+use Tests\Concerns\CommittedDatabase;
 use Tests\TestCase;
 
 class ChatTest extends TestCase
 {
-    use RefreshDatabase;
+    use CommittedDatabase;
 
     private User $patient;
 
