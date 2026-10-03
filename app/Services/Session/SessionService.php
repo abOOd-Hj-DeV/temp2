@@ -55,7 +55,7 @@ class SessionService
 
         try {
             $session = DB::transaction(function () use ($patient, $therapist, $data, $date, $time) {
-                $lockedPatient = BookingLocks::patient($patient->user_id);
+                $lockedPatient = BookingLocks::patient($patient->user_id, true);
                 BookingLocks::subscriptions($lockedPatient);
                 $therapist = BookingLocks::therapists([$therapist->user_id])->firstOrFail();
                 $patient->setRawAttributes(
