@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\V1\TherapistModuleController;
 use App\Http\Controllers\Api\V1\TherapistReviewController;
 use App\Http\Controllers\Api\V1\TherapistSwitchController;
 use Illuminate\Support\Facades\Route;
+use Spatie\Permission\Middleware\PermissionMiddleware;
 
 // Patient-facing therapist browsing (any authenticated, verified user).
 Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function () {
@@ -18,7 +19,7 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
         ->whereUuid('id');
     Route::get('/{id}/reviews', [TherapistReviewController::class, 'index'])->whereUuid('id');
 
-    Route::middleware('role:'.UserRole::PATIENT->value)->group(function () {
+    Route::middleware(['role:'.UserRole::PATIENT->value, PermissionMiddleware::class.':access patient care,api'])->group(function () {
         Route::post('/{id}/reviews', [TherapistReviewController::class, 'store'])
             ->whereUuid('id')->middleware(['throttle:10,1', 'idempotent']);
         Route::put('/{id}/reviews/mine', [TherapistReviewController::class, 'update'])
@@ -41,10 +42,10 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
             ->whereUuid('id')->middleware('throttle:20,1');
 
         // Operational: approved therapists only.
-        Route::middleware('therapist.approved')->group(function () {
+        Route::middleware(['therapist.approved', PermissionMiddleware::class.':manage therapist care,api'])->group(function () {
             Route::get('/me/dashboard', [TherapistController::class, 'dashboard']);
             Route::get('/dashboard', [TherapistController::class, 'dashboard']);
-            Route::get('/me/sessions', [TherapistController::class, 'sessions']);
+            Route::get('/me/sessions', [TherapistController::class, 'sessions'])->middleware(PermissionMiddleware::class.':view appointments,api');
 
             Route::get('/clients', [TherapistController::class, 'clients']);
             Route::get('/clients/{id}', [TherapistController::class, 'client'])->whereUuid('id');
@@ -73,16 +74,16 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
 
             Route::get('/wallet', [TherapistController::class, 'wallet']);
             Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware(['throttle:5,1', 'idempotent']);
-            Route::get('/reports', [TherapistController::class, 'reports']);
+            Route::get('/reports', [TherapistController::class, 'reports'])->middleware(PermissionMiddleware::class.':view reports,api');
             Route::get('/me/reviews', [TherapistReviewController::class, 'own']);
 
-            Route::get('/me/blocked-periods', [TherapistBlockedPeriodController::class, 'index']);
-            Route::post('/me/blocked-periods', [TherapistBlockedPeriodController::class, 'store'])->middleware('idempotent');
-            Route::delete('/me/blocked-periods/{id}', [TherapistBlockedPeriodController::class, 'destroy'])->whereUuid('id');
+            Route::get('/me/blocked-periods', [TherapistBlockedPeriodController::class, 'index'])->middleware(PermissionMiddleware::class.':view appointments,api');
+            Route::post('/me/blocked-periods', [TherapistBlockedPeriodController::class, 'store'])->middleware(['idempotent', PermissionMiddleware::class.':manage appointments,api']);
+            Route::delete('/me/blocked-periods/{id}', [TherapistBlockedPeriodController::class, 'destroy'])->whereUuid('id')->middleware(PermissionMiddleware::class.':manage appointments,api');
             // Step 1 of a patient's therapist switch: the requested therapist answers.
-            Route::get('/me/switch-requests', [TherapistSwitchController::class, 'incoming']);
+            Route::get('/me/switch-requests', [TherapistSwitchController::class, 'incoming'])->middleware(PermissionMiddleware::class.':view appointments,api');
             Route::post('/me/switch-requests/{switch}/decide', [TherapistSwitchController::class, 'therapistDecide'])
-                ->whereUuid('switch')->middleware('idempotent');
+                ->whereUuid('switch')->middleware(['idempotent', PermissionMiddleware::class.':manage appointments,api']);
         });
     });
 
@@ -90,10 +91,10 @@ Route::middleware(['auth:api', 'status'])->prefix('therapists')->group(function 
 });
 
 // Short aliases used by the mobile client spec.
-Route::middleware(['auth:api', 'status', 'role:'.UserRole::THERAPIST->value, 'therapist.approved'])->group(function () {
+Route::middleware(['auth:api', 'status', 'role:'.UserRole::THERAPIST->value, 'therapist.approved', PermissionMiddleware::class.':manage therapist care,api'])->group(function () {
     Route::get('/clients', [TherapistController::class, 'clients']);
     Route::get('/clients/{id}', [TherapistController::class, 'client'])->whereUuid('id');
     Route::get('/wallet', [TherapistController::class, 'wallet']);
     Route::post('/wallet/withdraw', [TherapistController::class, 'withdraw'])->middleware(['throttle:5,1', 'idempotent']);
-    Route::get('/reports', [TherapistController::class, 'reports']);
+    Route::get('/reports', [TherapistController::class, 'reports'])->middleware(PermissionMiddleware::class.':view reports,api');
 });
