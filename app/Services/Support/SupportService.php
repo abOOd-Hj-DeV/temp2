@@ -103,10 +103,12 @@ class SupportService
             ]);
         }
 
-        $ticket->update(['assigned_to' => $agent->id]);
-        $this->audit->record($admin, AuditLogService::SUPPORT_TICKET_ASSIGNED, $ticket->id, [
-            'assigned_to' => $agent->id,
-        ]);
+        DB::transaction(function () use ($ticket, $agent, $admin): void {
+            $ticket->update(['assigned_to' => $agent->id]);
+            $this->audit->record($admin, AuditLogService::SUPPORT_TICKET_ASSIGNED, $ticket->id, [
+                'assigned_to' => $agent->id,
+            ]);
+        });
 
         return $ticket->refresh();
     }
@@ -115,10 +117,12 @@ class SupportService
     {
         $ticket = $this->findOrFail($id);
 
-        $ticket->update(['status' => $status]);
-        $this->audit->record($actor, AuditLogService::SUPPORT_TICKET_STATUS, $ticket->id, [
-            'status' => $status,
-        ]);
+        DB::transaction(function () use ($ticket, $actor, $status): void {
+            $ticket->update(['status' => $status]);
+            $this->audit->record($actor, AuditLogService::SUPPORT_TICKET_STATUS, $ticket->id, [
+                'status' => $status,
+            ]);
+        });
 
         return $ticket->refresh();
     }

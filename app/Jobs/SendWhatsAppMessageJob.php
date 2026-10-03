@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\Log;
  * backoff instead of being lost with the originating HTTP request. When the
  * context carries a `notification_log_id`, every outcome is written back to
  * that ledger row.
+ * Committed delivery suppresses replay; provider acceptance before a ledger
+ * commit still has an at-least-once crash window.
  */
 class SendWhatsAppMessageJob implements ShouldQueue
 {
@@ -49,6 +51,11 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 if (! $user || ! $user->is_active || AccountFileFence::erasing($user->id, $user)) {
                     return;
                 }
+                $log = NotificationLog::whereKey($log->id)->lockForUpdate()->first();
+                if (! $log || $log->channel !== NotificationLog::CHANNEL_WHATSAPP
+                    || in_array($log->status, [NotificationLog::STATUS_SENT, NotificationLog::STATUS_SKIPPED], true)) {
+                    return;
+                }
                 try {
                     $this->deliver($whatsApp);
                 } catch (\Throwable $e) {
@@ -68,8 +75,10 @@ class SendWhatsAppMessageJob implements ShouldQueue
     {
         if (isset($this->context['schedule_key'], $this->context['session_id'])) {
             $session = TherapySession::find($this->context['session_id']);
-            if ($session === null || $session->status->value !== 'confirmed' || ! hash_equals($this->context['schedule_key'], hash('sha256', SessionClock::fromStored($session->session_date, (string) $session->session_time)->startOfMinute()->toIso8601String()))) {
-                $this->log()?->update(['status' => NotificationLog::STATUS_SKIPPED, 'error' => 'Appointment no longer current.']);
+            $instant = $session ? SessionClock::fromStored($session->session_date, (string) $session->session_time)->startOfMinute() : null;
+            if ($instant === null || $session->status->value !== 'confirmed' || $instant->lessThanOrEqualTo(now())
+                || ! hash_equals($this->context['schedule_key'], hash('sha256', $instant->toIso8601String()))) {
+                $this->log()?->update(['status' => NotificationLog::STATUS_SKIPPED, 'error' => 'Appointment no longer current or upcoming.']);
 
                 return;
             }

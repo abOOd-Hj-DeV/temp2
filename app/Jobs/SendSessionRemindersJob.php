@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Enums\SessionStatus;
 use App\Models\TherapySession;
 use App\Repositories\Contracts\SessionRepositoryInterface;
+use App\Services\Files\AccountFileFence;
 use App\Services\NotificationService;
 use App\Support\SessionClock;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -41,10 +42,12 @@ class SendSessionRemindersJob implements ShouldQueue
         foreach ($candidates as $id) {
             try {
                 DB::transaction(function () use ($id, $label, $from, $to, $notifications): void {
+                    $snapshot = TherapySession::findOrFail($id);
+                    AccountFileFence::lock([$snapshot->patient_id]);
                     $session = TherapySession::whereKey($id)->lockForUpdate()->firstOrFail();
                     $instant = SessionClock::fromStored($session->session_date, (string) $session->session_time)->startOfMinute();
 
-                    if ($session->status !== SessionStatus::CONFIRMED || ! $instant->between($from, $to)) {
+                    if ($session->patient_id !== $snapshot->patient_id || $session->status !== SessionStatus::CONFIRMED || ! $instant->between($from, $to)) {
                         return;
                     }
 

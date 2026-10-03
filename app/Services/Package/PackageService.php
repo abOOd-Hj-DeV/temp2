@@ -43,12 +43,15 @@ class PackageService
     {
         try {
             // Own (save-pointed) transaction so a unique violation cannot abort an enclosing one on PostgreSQL.
-            $package = DB::transaction(fn () => Package::create($data + ['created_by' => $actor->id, 'is_published' => false]));
+            $package = DB::transaction(function () use ($actor, $data) {
+                $package = Package::create($data + ['created_by' => $actor->id, 'is_published' => false]);
+                $this->audit->record($actor, AuditLogService::PACKAGE_CREATED, $package->id, $data);
+
+                return $package;
+            });
         } catch (UniqueConstraintViolationException) {
             throw new ConflictException('A package with this code already exists.');
         }
-
-        $this->audit->record($actor, AuditLogService::PACKAGE_CREATED, $package->id, $data);
 
         return $package;
     }

@@ -80,7 +80,7 @@ class WalletService
         }
 
         try {
-            $withdrawal = DB::transaction(function () use ($therapist, $amount, $payoutDetails) {
+            $withdrawal = DB::transaction(function () use ($therapist, $amount, $payoutDetails, $actor) {
                 $locked = Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
 
                 if ($locked->withdrawals()->where('status', WalletWithdrawal::STATUS_PENDING)->exists()) {
@@ -93,18 +93,19 @@ class WalletService
                     throw ValidationException::withMessages(['amount' => "Insufficient balance. Available: {$available}."]);
                 }
 
-                return WalletWithdrawal::create([
+                $withdrawal = WalletWithdrawal::create([
                     'therapist_id' => $locked->user_id,
                     'amount' => $amount,
                     'status' => WalletWithdrawal::STATUS_PENDING,
                     'payout_details' => $payoutDetails,
                 ]);
+                $this->audit->record($actor, AuditLogService::WITHDRAWAL_REQUESTED, $withdrawal->id, ['amount' => $amount]);
+
+                return $withdrawal;
             });
         } catch (UniqueConstraintViolationException) {
             throw new ConflictException('You already have a withdrawal request pending review.');
         }
-
-        $this->audit->record($actor, AuditLogService::WITHDRAWAL_REQUESTED, $withdrawal->id, ['amount' => $amount]);
 
         return $withdrawal;
     }
