@@ -116,7 +116,7 @@ class StaffAccountService
                     'languages' => $profile['languages'] ?? [],
                     'bio' => $profile['bio'] ?? null,
                     'availability' => [],
-                    'approval_status' => ApprovalStatus::APPROVED->value,
+                    'approval_status' => ApprovalStatus::PENDING->value,
                     'clients_limit' => $profile['clients_limit'] ?? 20,
                 ]);
             }

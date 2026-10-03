@@ -3,12 +3,15 @@
 namespace App\Models;
 
 use App\Enums\UserRole;
+use App\Events\Auth\CredentialsRevoked;
+use App\Services\Auth\OtpService;
 use App\Traits\HasUUID;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\HasApiTokens;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Traits\HasRoles;
@@ -27,7 +30,7 @@ class User extends Authenticatable
     ];
 
     protected $hidden = [
-        'password', 'remember_token',
+        'password', 'remember_token', 'credential_version',
     ];
 
     protected $casts = [
@@ -40,6 +43,7 @@ class User extends Authenticatable
         'password_changed_at' => 'datetime',
         'is_active' => 'boolean',
         'role' => UserRole::class,
+        'credential_version' => 'integer',
     ];
 
     /**
@@ -48,7 +52,15 @@ class User extends Authenticatable
      */
     protected static function booted(): void
     {
+        static::saving(function (User $user): void {
+            if ($user->exists && $user->isDirty('password')) {
+                $user->credential_version = (int) $user->getOriginal('credential_version') + 1;
+            }
+        });
         static::saved(function (User $user): void {
+            if ($user->wasChanged('password')) {
+                $user->invalidateAuthChallenges();
+            }
             if ($user->role instanceof UserRole && ($user->wasRecentlyCreated || $user->wasChanged('role'))) {
                 $user->syncSpatieRole();
             }
@@ -73,8 +85,25 @@ class User extends Authenticatable
     /** Revoke every access and refresh token (logout everywhere / compromise). */
     public function revokeAllTokens(): void
     {
-        $this->refreshTokens()->whereNull('revoked_at')->update(['revoked_at' => now()]);
-        $this->tokens()->delete();
+        $version = DB::transaction(function (): int {
+            $user = static::whereKey($this->id)->lockForUpdate()->firstOrFail();
+            $user->forceFill(['credential_version' => (int) $user->credential_version + 1])->save();
+            $user->invalidateAuthChallenges();
+            $user->refreshTokens()->whereNull('revoked_at')->update(['revoked_at' => now()]);
+            $user->tokens()->delete();
+            CredentialsRevoked::dispatch((string) $user->id);
+
+            return (int) $user->credential_version;
+        });
+        $this->credential_version = $version;
+        $this->syncOriginalAttribute('credential_version');
+    }
+
+    public function invalidateAuthChallenges(): void
+    {
+        DB::table('auth_login_challenges')->where('user_id', $this->id)->delete();
+        app(OtpService::class)->invalidate($this, OtpService::PURPOSE_LOGIN_2FA);
+        app(OtpService::class)->invalidate($this, OtpService::PURPOSE_PASSWORD_RESET);
     }
 
     public function patient(): HasOne

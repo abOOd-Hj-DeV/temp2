@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\V1\Auth\ActivateAccountRequest;
 use App\Http\Requests\Api\V1\Auth\ForgotPasswordRequest;
+use App\Http\Requests\Api\V1\Auth\LoginChallengeRequest;
+use App\Http\Requests\Api\V1\Auth\LoginChallengeResendRequest;
 use App\Http\Requests\Api\V1\Auth\LoginRequest;
 use App\Http\Requests\Api\V1\Auth\OTPRequest;
 use App\Http\Requests\Api\V1\Auth\RefreshTokenRequest;
@@ -48,20 +50,21 @@ class AuthController extends Controller
         return response()->json($this->auth->login($request->validated()));
     }
 
-    public function verifyLoginOtp(OTPRequest $request): JsonResponse
+    public function verifyLoginOtp(LoginChallengeRequest $request): JsonResponse
     {
         return response()->json(
             $this->auth->verifyLoginOtp(
                 $request->input('whatsapp_number'),
-                $request->input('otp')
+                $request->input('otp'),
+                $request->input('login_challenge')
             )
         );
     }
 
-    public function resendLoginOtp(ResendOTPRequest $request): JsonResponse
+    public function resendLoginOtp(LoginChallengeResendRequest $request): JsonResponse
     {
         return response()->json(
-            $this->auth->resendLoginOtp($request->input('whatsapp_number'))
+            $this->auth->resendLoginOtp($request->input('whatsapp_number'), $request->input('login_challenge'))
         );
     }
 
