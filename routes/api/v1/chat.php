@@ -3,9 +3,10 @@
 use App\Enums\UserRole;
 use App\Http\Controllers\Api\V1\ChatController;
 use Illuminate\Support\Facades\Route;
+use Spatie\Permission\Middleware\PermissionMiddleware;
 
 // Patient <-> assigned therapist only; the pairing itself is enforced in ChatService.
-Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value.','.UserRole::THERAPIST->value])
+Route::middleware(['auth:api', 'status', 'role:'.UserRole::PATIENT->value.','.UserRole::THERAPIST->value, PermissionMiddleware::class.':access care chat,api'])
     ->prefix('chat')
     ->group(function () {
         Route::get('/', [ChatController::class, 'index'])->middleware('throttle:60,1');

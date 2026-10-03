@@ -22,6 +22,7 @@ class RolePermissionSeeder extends Seeder
             'manage users', 'view reports', 'manage content', 'manage finances',
             'book appointments', 'view appointments', 'manage appointments',
             'review documents', 'assign support',
+            'access patient care', 'manage therapist care', 'access care chat',
         ];
 
         // 3. إنشاء الصلاحيات وتحديد الحارس 'api'
@@ -50,11 +51,11 @@ class RolePermissionSeeder extends Seeder
 
             } elseif ($roleName === UserRole::PATIENT->value) {
                 // العميل (Patient)
-                $role->syncPermissions(['book appointments', 'view appointments']);
+                $role->syncPermissions(['book appointments', 'view appointments', 'access patient care', 'access care chat']);
 
             } elseif ($roleName === UserRole::THERAPIST->value) {
                 // المعالج (Therapist)
-                $role->syncPermissions(['view reports', 'manage appointments', 'view appointments']);
+                $role->syncPermissions(['view reports', 'manage appointments', 'view appointments', 'manage therapist care', 'access care chat']);
 
             } elseif ($roleName === UserRole::CLINICAL_SUPERVISOR->value) {
                 // المشرف السريري (Clinical Supervisor)

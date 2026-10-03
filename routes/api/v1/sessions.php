@@ -2,9 +2,10 @@
 
 use App\Enums\UserRole;
 use App\Http\Controllers\Api\V1\SessionController;
+use App\Http\Middleware\EnsureSessionPermission;
 use Illuminate\Support\Facades\Route;
 
-Route::middleware(['auth:api', 'status'])->prefix('sessions')->group(function () {
+Route::middleware(['auth:api', 'status', EnsureSessionPermission::class])->prefix('sessions')->group(function () {
 
     // Patient actions.
     Route::middleware('role:'.UserRole::PATIENT->value)->group(function () {
@@ -25,9 +26,11 @@ Route::middleware(['auth:api', 'status'])->prefix('sessions')->group(function ()
         ]));
 
     // Shared read/cancel for the session's participants.
-    Route::get('/{session}', [SessionController::class, 'show'])->whereUuid('session');
-    Route::post('/{session}/cancel', [SessionController::class, 'cancel'])->whereUuid('session');
-    Route::get('/{session}/recommendation', [SessionController::class, 'recommendation'])->whereUuid('session');
+    Route::middleware('role:'.UserRole::PATIENT->value.','.UserRole::THERAPIST->value)->group(function () {
+        Route::get('/{session}', [SessionController::class, 'show'])->whereUuid('session');
+        Route::post('/{session}/cancel', [SessionController::class, 'cancel'])->whereUuid('session');
+        Route::get('/{session}/recommendation', [SessionController::class, 'recommendation'])->whereUuid('session');
+    });
 
     // Therapist actions (ownership enforced in the service; approved only).
     Route::middleware(['role:'.UserRole::THERAPIST->value, 'therapist.approved'])->group(function () {

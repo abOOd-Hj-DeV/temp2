@@ -138,24 +138,25 @@ class StaffAccountService
 
     public function resendInvitation(User $actor, User $user): array
     {
-        $this->assertManages($actor, $user);
+        [$user, $invitation, $code] = DB::transaction(function () use ($user, $actor) {
+            $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            $this->assertManages($actor, $user);
 
-        if ($user->isVerified()) {
-            throw ValidationException::withMessages(['user' => __('This account is already activated.')]);
-        }
+            if ($user->isVerified()) {
+                throw ValidationException::withMessages(['user' => __('This account is already activated.')]);
+            }
 
-        $latest = AccountInvitation::where('user_id', $user->id)->latest('created_at')->first();
-        if ($latest && $latest->created_at->addSeconds(self::RESEND_COOLDOWN_SECONDS)->isFuture()) {
-            throw ValidationException::withMessages(['user' => __('Please wait before resending the invitation.')]);
-        }
+            $latest = AccountInvitation::where('user_id', $user->id)->latest('created_at')->lockForUpdate()->first();
+            if ($latest && $latest->created_at->addSeconds(self::RESEND_COOLDOWN_SECONDS)->isFuture()) {
+                throw ValidationException::withMessages(['user' => __('Please wait before resending the invitation.')]);
+            }
 
-        [$invitation, $code] = DB::transaction(function () use ($user, $actor) {
             AccountInvitation::where('user_id', $user->id)->open()->update(['revoked_at' => now()]);
 
             $pair = $this->issue($user, $actor);
             $this->audit->record($actor, AuditLogService::STAFF_INVITATION_RESENT, $user->id);
 
-            return $pair;
+            return [$user, ...$pair];
         });
 
         $this->deliver($user, $invitation, $code, deleteUserOnFailure: false);
