@@ -13,6 +13,7 @@ use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\Billing\PaymentReviewService;
 use App\Services\Package\PackageService;
+use App\Services\Session\BookingLocks;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
@@ -47,7 +48,8 @@ class SubscriptionService
         try {
             $result = DB::transaction(function () use ($patient, $package, $path, $price) {
                 // Serialise concurrent submissions from the same patient.
-                Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
+                $patient = BookingLocks::patient($patient->user_id);
+                BookingLocks::subscriptions($patient);
 
                 if ($this->subscriptions->hasPendingOrActive($patient->user_id)) {
                     throw ValidationException::withMessages([
@@ -106,7 +108,13 @@ class SubscriptionService
     public function cancel(Subscription $subscription, User $actor, ?string $reason = null): array
     {
         return DB::transaction(function () use ($subscription, $actor, $reason) {
-            $locked = Subscription::whereKey($subscription->id)->lockForUpdate()->firstOrFail();
+            $snapshot = Subscription::findOrFail($subscription->id);
+            $patient = BookingLocks::patient($snapshot->patient_id);
+            $locked = BookingLocks::subscriptions($patient)->firstWhere('id', $subscription->id);
+            if ($locked === null) {
+                throw new ConflictException('The subscription changed; retry the request.');
+            }
+            $therapists = BookingLocks::therapists($locked->sessions()->pluck('therapist_id')->push($locked->therapist_id)->all());
 
             if ($locked->cancelled_at !== null) {
                 throw new ConflictException('This package is already cancelled.');
@@ -135,6 +143,10 @@ class SubscriptionService
                 'cancelled_by' => $actor->id,
                 'cancellation_reason' => $reason,
             ]);
+
+            foreach ($therapists as $therapist) {
+                $therapist->syncClientsCount();
+            }
 
             $this->audit->record($actor, AuditLogService::SUBSCRIPTION_CANCELLED, $locked->id, [
                 'patient_id' => $locked->patient_id,

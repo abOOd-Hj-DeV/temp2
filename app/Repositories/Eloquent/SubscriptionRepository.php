@@ -29,7 +29,7 @@ class SubscriptionRepository implements SubscriptionRepositoryInterface
             ->where('verification_status', 'approved')
             ->whereNull('cancelled_at')
             ->whereNotNull('end_date')
-            ->where('end_date', '>=', now()->toDateString())
+            ->where('end_date', '>=', Subscription::localDateForPatient($patientId))
             ->latest('end_date')
             ->first();
     }
@@ -38,11 +38,11 @@ class SubscriptionRepository implements SubscriptionRepositoryInterface
     {
         return Subscription::where('patient_id', $patientId)
             ->whereNull('cancelled_at')
-            ->where(function ($q) {
+            ->where(function ($q) use ($patientId) {
                 $q->where('verification_status', 'pending')
-                    ->orWhere(function ($q2) {
+                    ->orWhere(function ($q2) use ($patientId) {
                         $q2->where('verification_status', 'approved')
-                            ->where('end_date', '>=', now()->toDateString());
+                            ->where('end_date', '>=', Subscription::localDateForPatient($patientId));
                     });
             })
             ->exists();

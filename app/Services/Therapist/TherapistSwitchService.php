@@ -15,7 +15,8 @@ use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
 use App\Services\RedFlagService;
-use Carbon\Carbon;
+use App\Services\Session\BookingLocks;
+use App\Support\SessionClock;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -85,14 +86,12 @@ class TherapistSwitchService
             throw ValidationException::withMessages(['new_therapist_id' => 'The selected therapist is not available.']);
         }
 
-        if (! $target->can_accept_new_clients) {
-            throw ValidationException::withMessages(['new_therapist_id' => 'The selected therapist is not accepting new clients.']);
-        }
-
         try {
             $switch = DB::transaction(function () use ($patient, $target, $subscription, $reason) {
-                // Serialise per patient; therapist_switches_requested_unique is the backstop.
-                Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
+                $patient = BookingLocks::patient($patient->user_id);
+                BookingLocks::subscriptions($patient);
+                $target = BookingLocks::therapists([$target->user_id])->firstOrFail();
+                $this->assertEligibility($patient, $subscription->id, $target);
 
                 $open = TherapistSwitch::where('patient_id', $patient->user_id)
                     ->where('status', 'requested')
@@ -135,7 +134,7 @@ class TherapistSwitchService
      * A switch is not allowed while a live (pending/confirmed) session with
      * the current therapist starts within the lock window.
      */
-    private function hasSessionWithinLockWindow(Patient $patient): bool
+    private function hasSessionWithinLockWindow(Patient $patient, bool $lock = false): bool
     {
         $from = now();
         $to = now()->addHours($this->switchLockHours());
@@ -145,9 +144,9 @@ class TherapistSwitchService
             ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
             ->whereDate('session_date', '>=', $from->toDateString())
             ->whereDate('session_date', '<=', $to->toDateString())
-            ->get()
+            ->orderBy('id')->when($lock, fn ($query) => $query->lockForUpdate())->get()
             ->contains(function (TherapySession $session) use ($from, $to) {
-                $startsAt = Carbon::parse($session->session_date->toDateString().' '.substr((string) $session->session_time, 0, 5));
+                $startsAt = SessionClock::fromStored($session->session_date, (string) $session->session_time)->startOfMinute();
 
                 return $startsAt->between($from, $to);
             });
@@ -161,6 +160,10 @@ class TherapistSwitchService
     public function therapistDecide(TherapistSwitch $switch, bool $accept, User $therapist, ?string $note = null): TherapistSwitch
     {
         $switch = DB::transaction(function () use ($switch, $accept, $therapist, $note) {
+            $snapshot = TherapistSwitch::findOrFail($switch->id);
+            $patient = BookingLocks::patient($snapshot->patient_id);
+            BookingLocks::subscriptions($patient);
+            BookingLocks::therapists([$snapshot->old_therapist_id, $snapshot->new_therapist_id]);
             $locked = TherapistSwitch::whereKey($switch->id)->lockForUpdate()->firstOrFail();
 
             if ($locked->new_therapist_id !== $therapist->id) {
@@ -202,6 +205,10 @@ class TherapistSwitchService
     public function decide(TherapistSwitch $switch, bool $approve, User $admin, ?string $note = null): TherapistSwitch
     {
         $switch = DB::transaction(function () use ($switch, $approve, $admin, $note) {
+            $snapshot = TherapistSwitch::findOrFail($switch->id);
+            $patient = BookingLocks::patient($snapshot->patient_id);
+            BookingLocks::subscriptions($patient);
+            $therapists = BookingLocks::therapists([$snapshot->old_therapist_id, $snapshot->new_therapist_id]);
             $locked = TherapistSwitch::whereKey($switch->id)->lockForUpdate()->firstOrFail();
 
             if ($locked->status !== 'requested') {
@@ -215,23 +222,12 @@ class TherapistSwitchService
             $cancelledSessionIds = [];
 
             if ($approve) {
-                $target = Therapist::whereKey($locked->new_therapist_id)->lockForUpdate()->firstOrFail();
-
-                if ($target->approval_status !== ApprovalStatus::APPROVED) {
-                    throw ValidationException::withMessages(['therapist' => 'Target therapist is no longer approved.']);
+                $target = $therapists->firstWhere('user_id', $locked->new_therapist_id);
+                if ($patient->therapist_id !== $locked->old_therapist_id) {
+                    throw new ConflictException('The patient assignment changed; request a new switch.');
                 }
-
-                $alreadyClient = $target->sessions()
-                    ->where('patient_id', $locked->patient_id)
-                    ->where('status', '!=', SessionStatus::CANCELLED->value)
-                    ->exists();
-
-                if (! $alreadyClient && $target->clients_count >= $target->clients_limit) {
-                    throw ValidationException::withMessages(['therapist' => 'Target therapist has reached their client limit.']);
-                }
-
-                Patient::whereKey($locked->patient_id)->lockForUpdate()->firstOrFail();
-                Patient::whereKey($locked->patient_id)->update(['therapist_id' => $target->user_id]);
+                $this->assertEligibility($patient, $locked->subscription_id, $target);
+                $patient->update(['therapist_id' => $target->user_id]);
 
                 $cancelledSessionIds = $this->cancelOpenSessionsWithPreviousTherapist($locked, $admin);
 
@@ -244,7 +240,7 @@ class TherapistSwitchService
                 $this->syncClientsCount($target);
 
                 if ($locked->old_therapist_id) {
-                    $previous = Therapist::whereKey($locked->old_therapist_id)->lockForUpdate()->first();
+                    $previous = $therapists->firstWhere('user_id', $locked->old_therapist_id);
 
                     if ($previous) {
                         $this->syncClientsCount($previous);
@@ -288,6 +284,7 @@ class TherapistSwitchService
         $open = TherapySession::where('patient_id', $switch->patient_id)
             ->where('therapist_id', $switch->old_therapist_id)
             ->whereIn('status', [SessionStatus::PENDING->value, SessionStatus::CONFIRMED->value])
+            ->orderBy('id')
             ->lockForUpdate()
             ->get();
 
@@ -325,12 +322,31 @@ class TherapistSwitchService
     /** Distinct patients who are assigned to the therapist or hold a live session with them. */
     private function syncClientsCount(Therapist $therapist): void
     {
-        $fromSessions = $therapist->sessions()
-            ->where('status', '!=', SessionStatus::CANCELLED->value)
-            ->pluck('patient_id');
-        $assigned = Patient::where('therapist_id', $therapist->user_id)->pluck('user_id');
+        $therapist->syncClientsCount();
+    }
 
-        $therapist->update(['clients_count' => $fromSessions->merge($assigned)->unique()->count()]);
+    private function assertEligibility(Patient $patient, string $subscriptionId, ?Therapist $target): void
+    {
+        $current = $this->subscriptions->activeForPatient($patient->user_id);
+        if ($current === null || $current->id !== $subscriptionId || ! $current->is_active) {
+            throw ValidationException::withMessages(['subscription' => 'The package for this switch is no longer current and active.']);
+        }
+        if ($patient->therapist_id === null || $patient->therapist_id === $target?->user_id) {
+            throw ValidationException::withMessages(['therapist' => 'The therapist assignment is no longer eligible for this switch.']);
+        }
+        if (TherapistSwitch::where('subscription_id', $subscriptionId)->where('status', 'approved')->exists()) {
+            throw ValidationException::withMessages(['therapist' => 'Only one therapist change is allowed per treatment package.']);
+        }
+        if ($this->hasSessionWithinLockWindow($patient, true)) {
+            throw ValidationException::withMessages(['therapist' => 'A session with the current therapist is within the switch lock window.']);
+        }
+        if ($target === null || $target->approval_status !== ApprovalStatus::APPROVED) {
+            throw ValidationException::withMessages(['therapist' => 'Target therapist is no longer approved.']);
+        }
+        if (! $target->reservedClients()->whereKey($patient->user_id)->exists()
+            && $target->reservedClients()->count() >= $target->clients_limit) {
+            throw ValidationException::withMessages(['therapist' => 'Target therapist has reached their client limit.']);
+        }
     }
 
     private function supervisors(): Collection

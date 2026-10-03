@@ -15,6 +15,7 @@ use App\Repositories\Contracts\PaymentRepositoryInterface;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
+use App\Services\Session\BookingLocks;
 use App\Services\Session\SessionService;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
@@ -67,7 +68,7 @@ class PaymentReviewService
 
         try {
             return DB::transaction(function () use ($session, $path) {
-                $locked = TherapySession::whereKey($session->id)->lockForUpdate()->firstOrFail();
+                $locked = BookingLocks::session($session->id);
 
                 if ($locked->payment_status !== PaymentStatus::PENDING) {
                     throw ValidationException::withMessages([
@@ -135,6 +136,15 @@ class PaymentReviewService
         $approve = $action === 'approve';
 
         $payment = DB::transaction(function () use ($payment, $reviewer, $approve, $note) {
+            $snapshot = Payment::findOrFail($payment->id);
+            if ($snapshot->therapy_session_id !== null) {
+                BookingLocks::session($snapshot->therapy_session_id);
+            } elseif ($snapshot->subscription_id !== null) {
+                $subscription = Subscription::findOrFail($snapshot->subscription_id);
+                $patient = BookingLocks::patient($subscription->patient_id);
+                BookingLocks::subscriptions($patient);
+                BookingLocks::therapists([$subscription->therapist_id, $patient->therapist_id]);
+            }
             $locked = Payment::whereKey($payment->id)->lockForUpdate()->firstOrFail();
 
             if ($locked->status !== PaymentReviewStatus::PENDING) {
@@ -203,11 +213,7 @@ class PaymentReviewService
 
     private function applyToSubscription(Payment $payment, bool $approved): void
     {
-        $subscription = Subscription::whereKey($payment->subscription_id)->lockForUpdate()->first();
-
-        if (! $subscription) {
-            return;
-        }
+        $subscription = Subscription::whereKey($payment->subscription_id)->lockForUpdate()->firstOrFail();
 
         if ($subscription->verification_status !== 'pending') {
             throw new ConflictException("The subscription is already {$subscription->verification_status}.");
@@ -221,6 +227,10 @@ class PaymentReviewService
             $this->subscriptions->update($subscription, ['verification_status' => 'rejected']);
 
             return;
+        }
+
+        if ($this->subscriptions->activeForPatient($subscription->patient_id) !== null) {
+            throw new ConflictException('The patient already has an active package.');
         }
 
         $days = $subscription->duration_days
