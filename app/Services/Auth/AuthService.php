@@ -409,8 +409,19 @@ class AuthService
 
     public function logoutAll(User $user): array
     {
-        $user->revokeAllTokens();
-        $this->audit->record($user, AuditLogService::LOGOUT_ALL, $user->id);
+        DB::transaction(function () use ($user): void {
+            $locked = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            $this->assertCredentialProof($locked, $user);
+            $this->assertLoginable($locked);
+
+            $current = $user->currentAccessToken();
+            if ($current instanceof PersonalAccessToken && ! $locked->tokens()->whereKey($current->getKey())->exists()) {
+                throw ValidationException::withMessages(['whatsapp_number' => __('Credentials changed. Please sign in again.')]);
+            }
+
+            $this->audit->record($locked, AuditLogService::LOGOUT_ALL, $locked->id);
+            $user->revokeAllTokens();
+        });
 
         return ['message' => __('Logged out from all devices.')];
     }
