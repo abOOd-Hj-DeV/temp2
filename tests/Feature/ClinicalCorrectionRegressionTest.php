@@ -598,11 +598,26 @@ final class ClinicalCorrectionRegressionTest extends TestCase
         $this->assertHistoryIsImmutable($before[0]->id);
     }
 
-    public function test_session_report_failed_backfill_rolls_back_all_bodies_and_restores_immutability(): void
+    public static function reportBackfillEntrypoints(): array
+    {
+        return [['backfill'], ['backfillSessionReports']];
+    }
+
+    public static function reportUpgradeEntrypoints(): array
+    {
+        return array_merge([['migration']], self::reportBackfillEntrypoints());
+    }
+
+    #[DataProvider('reportUpgradeEntrypoints')]
+    public function test_session_report_failed_backfill_rolls_back_all_bodies_and_restores_immutability(string $entrypoint): void
     {
         [$session, $before] = $this->legacySessionReports(true);
         try {
-            (require database_path('migrations/2026_10_03_220001_encrypt_clinical_session_reports.php'))->up();
+            if ($entrypoint === 'migration') {
+                (require database_path('migrations/2026_10_03_220001_encrypt_clinical_session_reports.php'))->up();
+            } else {
+                app(ClinicalEncryption::class)->$entrypoint();
+            }
             $this->fail('Corrupt recognizable ciphertext must fail closed.');
         } catch (DecryptException) {
             $this->assertSame($before->toJson(), DB::table('booking_report_revisions')->orderBy('id')->get()->toJson());
@@ -800,5 +815,73 @@ final class ClinicalCorrectionRegressionTest extends TestCase
     public static function blockedPeriodAuditMutations(): array
     {
         return [['create'], ['delete']];
+    }
+
+    public static function unsupportedBackfillEntrypoints(): array
+    {
+        return [['backfill'], ['backfillSessionReports'], ['revision-model']];
+    }
+
+    #[DataProvider('unsupportedBackfillEntrypoints')]
+    public function test_unsupported_backfill_driver_refuses_before_any_query_transaction_or_ddl(string $entrypoint): void
+    {
+        [$session, $history] = $this->legacySessionReports();
+        $beforeSummary = DB::table('therapy_sessions')->where('id', $session->id)->value('summary');
+        $beforeHistory = $history->toJson();
+        $original = DB::getFacadeRoot();
+        $queries = [];
+        DB::listen(function ($query) use (&$queries) {
+            $queries[] = $query->sql;
+        });
+        $unsupported = Mockery::mock($original);
+        $unsupported->shouldReceive('getDriverName')->andReturn('mysql');
+        foreach (['transaction', 'statement', 'unprepared'] as $method) {
+            $unsupported->shouldNotReceive($method);
+        }
+        DB::swap($unsupported);
+        try {
+            $service = app(ClinicalEncryption::class);
+            if ($entrypoint === 'revision-model') {
+                (new \ReflectionMethod($service, 'backfillModel'))->invoke($service, SessionReportRevision::class, ['previous_summary', 'new_summary'], false);
+            } else {
+                $service->$entrypoint();
+            }
+            $this->fail('Unsupported drivers must be refused before any mutation.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('requires SQLite or PostgreSQL', $e->getMessage());
+        } finally {
+            DB::swap($original);
+        }
+        $this->assertSame([], $queries);
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertSame($beforeSummary, DB::table('therapy_sessions')->where('id', $session->id)->value('summary'));
+        $this->assertSame($beforeHistory, DB::table('booking_report_revisions')->orderBy('id')->get()->toJson());
+        $this->assertHistoryIsImmutable($history->first()->id);
+    }
+
+    #[DataProvider('reportBackfillEntrypoints')]
+    public function test_report_backfill_wrong_key_rolls_back_all_content_and_restores_history_guard(string $entrypoint): void
+    {
+        [$session, $history] = $this->legacySessionReports();
+        DB::table('booking_report_revisions')->insert(['session_id' => $session->id, 'revision' => 3,
+            'actor_id' => $session->therapist_id, 'previous_summary' => 'clinical:v1:'.Crypt::encryptString('Authenticated history'),
+            'new_summary' => 'clinical:v1:'.Crypt::encryptString('Authenticated revision'),
+            'previous_sha256' => hash('sha256', 'Authenticated history'), 'new_sha256' => hash('sha256', 'Authenticated revision'), 'created_at' => now()]);
+        $beforeHistory = DB::table('booking_report_revisions')->orderBy('id')->get()->toJson();
+        $beforeSummary = DB::table('therapy_sessions')->where('id', $session->id)->value('summary');
+        $original = Crypt::getFacadeRoot();
+        Crypt::swap(new Encrypter(random_bytes(32), config('app.cipher')));
+        try {
+            app(ClinicalEncryption::class)->$entrypoint();
+            $this->fail('Unknown key must not silently reclassify an authenticated envelope.');
+        } catch (DecryptException) {
+            $this->assertTrue(true);
+        } finally {
+            Crypt::swap($original);
+        }
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertSame($beforeSummary, DB::table('therapy_sessions')->where('id', $session->id)->value('summary'));
+        $this->assertSame($beforeHistory, DB::table('booking_report_revisions')->orderBy('id')->get()->toJson());
+        $this->assertHistoryIsImmutable($history->first()->id);
     }
 }

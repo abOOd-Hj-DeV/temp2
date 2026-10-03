@@ -31,16 +31,19 @@ class ClinicalEncryption
 
     public function backfill(bool $rotate = false): void
     {
-        foreach (self::FIELDS + self::SESSION_REPORT_FIELDS as $model => $columns) {
+        $this->requireReportDriver();
+        foreach (self::FIELDS as $model => $columns) {
             $this->backfillModel($model, $columns, $rotate);
         }
+        $this->backfillSessionReports($rotate);
     }
 
-    public function backfillSessionReports(): void
+    public function backfillSessionReports(bool $rotate = false): void
     {
-        DB::transaction(function () {
+        $this->requireReportDriver();
+        DB::transaction(function () use ($rotate) {
             foreach (self::SESSION_REPORT_FIELDS as $model => $columns) {
-                $this->backfillModel($model, $columns, false);
+                $this->backfillModel($model, $columns, $rotate);
             }
         });
     }
@@ -89,6 +92,7 @@ class ClinicalEncryption
             return;
         }
 
+        $this->requireReportDriver();
         DB::transaction(function () use ($operation) {
             $postgres = DB::getDriverName() === 'pgsql';
             if ($postgres) {
@@ -101,5 +105,12 @@ class ClinicalEncryption
                 ? 'CREATE TRIGGER booking_report_revisions_no_update BEFORE UPDATE ON booking_report_revisions FOR EACH ROW EXECUTE FUNCTION booking_report_revisions_reject_update()'
                 : "CREATE TRIGGER booking_report_revisions_no_update BEFORE UPDATE ON booking_report_revisions BEGIN SELECT RAISE(ABORT, 'Report revisions cannot be overwritten'); END;");
         });
+    }
+
+    private function requireReportDriver(): void
+    {
+        if (! in_array(DB::getDriverName(), ['sqlite', 'pgsql'], true)) {
+            throw new \RuntimeException('Clinical report backfill requires SQLite or PostgreSQL; no data or triggers were changed.');
+        }
     }
 }

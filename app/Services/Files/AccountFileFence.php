@@ -2,20 +2,26 @@
 
 namespace App\Services\Files;
 
+use App\Enums\UserRole;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
-/** Lock before domain rows/bytes so erasure cannot be followed by an in-flight write. */
+/** Patients first, then other owners (id within each group), before domain rows/bytes. */
 class AccountFileFence
 {
     public static function lock(array $ids, bool $requireActive = true): void
     {
         $ids = array_values(array_unique($ids));
         sort($ids);
-        foreach ($ids as $id) {
-            $user = User::whereKey($id)->lockForUpdate()->first();
-            if (! $user || ($requireActive && ! $user->is_active) || self::erasing($id, $user)) {
+        $users = User::whereIn('id', $ids)
+            ->orderByRaw('CASE WHEN role = ? THEN 0 ELSE 1 END', [UserRole::PATIENT->value])
+            ->orderBy('id')->lockForUpdate()->get();
+        if ($users->count() !== count($ids)) {
+            throw new AccessDeniedHttpException('Account is unavailable for file operations.');
+        }
+        foreach ($users as $user) {
+            if (($requireActive && ! $user->is_active) || self::erasing($user->id, $user)) {
                 throw new AccessDeniedHttpException('Account is unavailable for file operations.');
             }
         }

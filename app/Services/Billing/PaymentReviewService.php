@@ -14,7 +14,6 @@ use App\Models\User;
 use App\Repositories\Contracts\PaymentRepositoryInterface;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
-use App\Services\Files\AccountFileFence;
 use App\Services\Files\RollbackFileCleanup;
 use App\Services\NotificationService;
 use App\Services\Session\BookingLocks;
@@ -68,10 +67,9 @@ class PaymentReviewService
         $disk = config('sakina.uploads_disk', 'local');
         try {
             return DB::transaction(function () use ($session, $proof, $disk) {
-                AccountFileFence::lock([$session->patient_id, $session->therapist_id]);
-                $path = self::storeProof($proof, "payment-proofs/{$session->patient_id}", $disk);
+                $locked = BookingLocks::session($session->id, true);
+                $path = self::storeProof($proof, "payment-proofs/{$locked->patient_id}", $disk);
                 RollbackFileCleanup::register($disk, $path);
-                $locked = BookingLocks::session($session->id);
 
                 if ($locked->payment_status !== PaymentStatus::PENDING) {
                     throw ValidationException::withMessages([
