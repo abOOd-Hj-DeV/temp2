@@ -33,6 +33,7 @@ class FileController extends Controller
         $safe = $this->files->authorizeDownload($request->user(), $path);
 
         return Storage::disk($this->files->disk())->download($safe, basename($safe), [
+            'Cache-Control' => 'private, no-store',
             'X-Content-Type-Options' => 'nosniff',
             'Content-Security-Policy' => "default-src 'none'",
         ]);

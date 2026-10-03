@@ -27,14 +27,14 @@ class SupportTicketController extends Controller
         $tickets = $this->support->listAll(array_filter($filters, fn ($v) => $v !== null));
 
         return response()->json([
-            'data' => $tickets->through(fn ($t) => $this->support->toArray($t)),
+            'data' => $tickets->through(fn ($t) => $this->support->toArray($t, $request->user())),
         ]);
     }
 
     public function show(Request $request, string $id): JsonResponse
     {
         return response()->json([
-            'data' => $this->support->toArray($this->support->show($request->user(), $id)),
+            'data' => $this->support->toArray($this->support->show($request->user(), $id), $request->user()),
         ]);
     }
 
@@ -44,7 +44,7 @@ class SupportTicketController extends Controller
 
         return response()->json([
             'data' => $this->support->toArray(
-                $this->support->assign($request->user(), $id, $data['assigned_to'])
+                $this->support->assign($request->user(), $id, $data['assigned_to']), $request->user()
             ),
         ]);
     }
@@ -64,7 +64,7 @@ class SupportTicketController extends Controller
 
         return response()->json([
             'data' => $this->support->toArray(
-                $this->support->setStatus($request->user(), $id, $data['status'])
+                $this->support->setStatus($request->user(), $id, $data['status']), $request->user()
             ),
         ]);
     }

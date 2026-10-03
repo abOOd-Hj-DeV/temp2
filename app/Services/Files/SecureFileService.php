@@ -3,15 +3,19 @@
 namespace App\Services\Files;
 
 use App\Enums\UserRole;
+use App\Models\DocumentRequest;
 use App\Models\Message;
 use App\Models\Payment;
+use App\Models\Support;
 use App\Models\Therapist;
 use App\Models\User;
 use App\Services\AuditLogService;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 
 /**
  * Private file storage with per-path authorization. Nothing here is ever
@@ -32,6 +36,10 @@ class SecureFileService
     public function upload(User $user, UploadedFile $file, string $purpose): array
     {
         $path = $file->store("uploads/{$user->id}/{$purpose}", ['disk' => $this->disk()]);
+
+        if (! is_string($path) || $path === '') {
+            throw new ServiceUnavailableHttpException(5, 'The file could not be stored. Please retry.');
+        }
 
         return [
             'path' => $path,
@@ -67,6 +75,10 @@ class SecureFileService
     {
         $path = $this->sanitize($rawPath);
 
+        if (str_starts_with($path, 'support/')) {
+            return $this->authorizeSupportAttachment($user, $path);
+        }
+
         if (! $this->canAccess($user, $path)) {
             // Same response for "not yours" and "does not exist".
             throw new NotFoundHttpException('File not found.');
@@ -79,6 +91,49 @@ class SecureFileService
         $this->audit->record($user, AuditLogService::FILE_DOWNLOADED, null, ['path' => $path]);
 
         return $path;
+    }
+
+    public function canDownloadSupportAttachment(User $user, Support $ticket): bool
+    {
+        return $ticket->user_id === $user->id
+            || in_array($user->role, [UserRole::ADMIN, UserRole::SUPER_ADMIN, UserRole::CLINICAL_SUPERVISOR], true)
+            || ($user->role === UserRole::SUPPORT_AGENT && $ticket->assigned_to === $user->id);
+    }
+
+    private function authorizeSupportAttachment(User $user, string $locator): string
+    {
+        if (! preg_match('#^support/([0-9a-f-]{36})/attachment$#i', $locator, $matches)) {
+            throw new NotFoundHttpException('File not found.');
+        }
+
+        $ticket = Support::find($matches[1]);
+        if (! $ticket || ! $this->canDownloadSupportAttachment($user, $ticket) || ! $ticket->file_path) {
+            throw new NotFoundHttpException('File not found.');
+        }
+
+        $path = $this->sanitize($ticket->file_path);
+        if (! str_starts_with($path, "uploads/{$ticket->user_id}/support/")
+            || ! Storage::disk($this->disk())->exists($path)) {
+            throw new NotFoundHttpException('File not found.');
+        }
+
+        $this->audit->record($user, AuditLogService::FILE_DOWNLOADED, $ticket->id, ['purpose' => 'support']);
+
+        return $path;
+    }
+
+    /** Cleanup must not mask a rollback or turn a committed upload into a failure. */
+    public function discard(string $path): void
+    {
+        try {
+            if (Storage::disk($this->disk())->delete($path)) {
+                return;
+            }
+        } catch (\Throwable $e) {
+            // Keep storage exception messages (which may contain paths) out of logs.
+        }
+
+        Log::warning('Private file cleanup failed.', ['disk' => $this->disk(), 'path_hash' => hash('sha256', $path)]);
     }
 
     public function disk(): string
@@ -104,7 +159,7 @@ class SecureFileService
             }
         }
 
-        if (! preg_match('#^(uploads|payment-proofs|licenses|chat)/[0-9a-f-]{36}/#i', $path)) {
+        if (! preg_match('#^(uploads|payment-proofs|licenses|chat|support)/[0-9a-f-]{36}/#i', $path)) {
             throw new AccessDeniedHttpException('Invalid path.');
         }
 
@@ -120,11 +175,22 @@ class SecureFileService
         $isFinance = $isStaff || $user->role === UserRole::FINANCE_PARTNER;
 
         return match ($family) {
-            'uploads' => $isOwner || $isStaff,
+            'uploads' => ($isOwner || $isStaff) && $this->isCurrentUpload($path),
             'payment-proofs' => ($isOwner && Payment::where('proof_file_path', $path)->exists()) || $isFinance,
             'licenses' => ($isOwner && Therapist::where('license_file_path', $path)->exists()) || $isStaff,
             'chat' => $this->isChatParticipant($user, $path),
             default => false,
+        };
+    }
+
+    private function isCurrentUpload(string $path): bool
+    {
+        $purpose = explode('/', $path, 4)[2] ?? '';
+
+        return match ($purpose) {
+            'document_requests' => DocumentRequest::where('file_path', $path)->exists(),
+            'support' => Support::where('file_path', $path)->exists(),
+            default => true,
         };
     }
 

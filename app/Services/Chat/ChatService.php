@@ -20,7 +20,6 @@ use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -156,7 +155,7 @@ class ChatService
             });
         } catch (\Throwable $e) {
             if ($stored !== null) {
-                Storage::disk($this->files->disk())->delete($stored['file_path']);
+                $this->files->discard($stored['file_path']);
             }
 
             throw $e;
@@ -378,7 +377,7 @@ class ChatService
     {
         $path = $file->store("chat/{$conversation->id}", ['disk' => $this->files->disk()]);
 
-        if ($path === false) {
+        if (! is_string($path) || $path === '') {
             Log::error('Chat attachment could not be stored', ['conversation_id' => $conversation->id]);
 
             throw ValidationException::withMessages(['attachment' => __('The attachment could not be stored. Please retry.')]);
