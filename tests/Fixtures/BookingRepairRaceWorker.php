@@ -2,9 +2,13 @@
 
 use App\Models\Patient;
 use App\Models\Subscription;
+use App\Models\TherapistSwitch;
+use App\Models\User;
+use App\Services\Account\StaffAccountService;
 use App\Services\NotificationService;
 use App\Services\Session\SessionService;
 use App\Services\Subscription\SubscriptionService;
+use App\Services\Therapist\TherapistSwitchService;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Carbon;
@@ -47,6 +51,12 @@ try {
         $subscription = Subscription::findOrFail($payload['subscription']);
         $app->make(SubscriptionService::class)->cancel($subscription, $subscription->patient->user);
         echo "result:cancelled\n";
+    } elseif ($payload['operation'] === 'deactivate') {
+        $app->make(StaffAccountService::class)->setActive(User::findOrFail($payload['actor']), User::findOrFail($payload['therapist']), false);
+        echo "result:deactivated\n";
+    } elseif ($payload['operation'] === 'switch') {
+        $app->make(TherapistSwitchService::class)->decide(TherapistSwitch::findOrFail($payload['switch']), true, User::findOrFail($payload['actor']));
+        echo "result:switched\n";
     } else {
         $session = $app->make(SessionService::class)->book(Patient::findOrFail($payload['patient']), [
             'therapist_id' => $payload['therapist'], 'session_date' => '2026-01-05',

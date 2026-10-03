@@ -7,10 +7,11 @@ use App\Models\Patient;
 use App\Models\Subscription;
 use App\Models\Therapist;
 use App\Models\TherapySession;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
 
 /**
- * Transaction lock order: patient -> subscriptions (id) -> therapists (user_id)
+ * Transaction lock order: patient -> subscriptions (id) -> therapist users (id) -> therapists (user_id)
  * -> switch -> sessions (id) -> payments. Never acquire an earlier lock later.
  * The patient lock serializes package/assignment/schedule changes; therapist
  * locks serialize capacity and slots across patients. Call inside a transaction.
@@ -29,7 +30,14 @@ final class BookingLocks
 
     public static function therapists(array $ids): Collection
     {
-        return Therapist::whereIn('user_id', array_filter($ids))->orderBy('user_id')->lockForUpdate()->get();
+        $ids = array_filter($ids);
+        $users = User::whereIn('id', $ids)->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+        $therapists = Therapist::whereIn('user_id', $ids)->orderBy('user_id')->lockForUpdate()->get();
+        foreach ($therapists as $therapist) {
+            $therapist->setRelation('user', $users->get($therapist->user_id));
+        }
+
+        return $therapists;
     }
 
     public static function session(string $id): TherapySession

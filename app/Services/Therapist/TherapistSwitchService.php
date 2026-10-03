@@ -2,7 +2,6 @@
 
 namespace App\Services\Therapist;
 
-use App\Enums\ApprovalStatus;
 use App\Enums\SessionStatus;
 use App\Exceptions\ConflictException;
 use App\Models\Patient;
@@ -82,7 +81,7 @@ class TherapistSwitchService
 
         $target = Therapist::whereKey($newTherapistId)->first();
 
-        if (! $target || $target->approval_status !== ApprovalStatus::APPROVED) {
+        if (! $target || ! $target->isBookable()) {
             throw ValidationException::withMessages(['new_therapist_id' => 'The selected therapist is not available.']);
         }
 
@@ -340,8 +339,8 @@ class TherapistSwitchService
         if ($this->hasSessionWithinLockWindow($patient, true)) {
             throw ValidationException::withMessages(['therapist' => 'A session with the current therapist is within the switch lock window.']);
         }
-        if ($target === null || $target->approval_status !== ApprovalStatus::APPROVED) {
-            throw ValidationException::withMessages(['therapist' => 'Target therapist is no longer approved.']);
+        if ($target === null || ! $target->isBookable()) {
+            throw ValidationException::withMessages(['therapist' => 'Target therapist is no longer available.']);
         }
         if (! $target->reservedClients()->whereKey($patient->user_id)->exists()
             && $target->reservedClients()->count() >= $target->clients_limit) {

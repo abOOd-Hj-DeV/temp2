@@ -5,10 +5,12 @@ namespace Tests\Feature;
 use App\Models\Patient;
 use App\Models\Subscription;
 use App\Models\Therapist;
+use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Symfony\Component\Process\InputStream;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
@@ -156,5 +158,93 @@ class PostgresBookingRepairRaceTest extends TestCase
         $this->assertSame(1, $therapist->fresh()->reservedClients()->count());
         $this->assertSame(1, TherapySession::count());
         $this->assertNull($b->fresh()->therapist_id);
+    }
+
+    public function test_deactivation_first_rejects_booking_after_stale_active_read(): void
+    {
+        $target = $this->therapist();
+        $patient = $this->patient($target);
+        $patient->update(['therapist_id' => null]);
+        [$deactivate, $book] = $this->race(
+            ['operation' => 'deactivate', 'therapist' => $target->user_id, 'actor' => $this->user('super_admin')->id],
+            ['operation' => 'book', 'therapist' => $target->user_id, 'patient' => $patient->user_id, 'time' => '10:00'],
+            'users',
+        );
+        $this->assertStringContainsString('result:deactivated', $deactivate);
+        $this->assertStringContainsString('result:rejected:therapist_id', $book);
+        $this->assertSame(0, TherapySession::count());
+        $this->assertNull($patient->fresh()->therapist_id);
+        $this->assertFalse($target->user->fresh()->is_active);
+    }
+
+    public function test_booking_first_serializes_before_deactivation_without_deadlock(): void
+    {
+        $target = $this->therapist();
+        $patient = $this->patient($target);
+        $patient->update(['therapist_id' => null]);
+        [$book, $deactivate] = $this->race(
+            ['operation' => 'book', 'therapist' => $target->user_id, 'patient' => $patient->user_id, 'time' => '10:00'],
+            ['operation' => 'deactivate', 'therapist' => $target->user_id, 'actor' => $this->user('super_admin')->id],
+            'users',
+        );
+        $this->assertStringContainsString('result:booked', $book);
+        $this->assertStringContainsString('result:deactivated', $deactivate);
+        $this->assertSame(1, TherapySession::count());
+        $this->assertSame($target->user_id, $patient->fresh()->therapist_id);
+        $this->assertFalse($target->user->fresh()->is_active);
+    }
+
+    private function acceptedSwitch(Patient $patient, Therapist $old, Therapist $target): TherapistSwitch
+    {
+        $subscription = Subscription::create([
+            'patient_id' => $patient->user_id, 'therapist_id' => $old->user_id, 'type' => '4_weeks',
+            'verification_status' => 'approved', 'start_date' => '2026-01-01', 'end_date' => '2026-01-30',
+            'price' => 150, 'sessions_total' => 4, 'daily_sessions_quota' => 1,
+        ]);
+
+        return TherapistSwitch::create([
+            'id' => (string) Str::uuid(),
+            'patient_id' => $patient->user_id, 'old_therapist_id' => $old->user_id, 'new_therapist_id' => $target->user_id,
+            'subscription_id' => $subscription->id, 'reason' => 'Synthetic race preference', 'timestamp' => now(),
+            'status' => 'requested', 'therapist_decision' => 'accepted', 'therapist_decided_at' => now(),
+        ]);
+    }
+
+    public function test_deactivation_first_rejects_final_switch_without_moving_package(): void
+    {
+        $old = $this->therapist();
+        $target = $this->therapist();
+        $patient = $this->patient($old);
+        $switch = $this->acceptedSwitch($patient, $old, $target);
+        [$deactivate, $decision] = $this->race(
+            ['operation' => 'deactivate', 'therapist' => $target->user_id, 'actor' => $this->user('super_admin')->id],
+            ['operation' => 'switch', 'switch' => $switch->id, 'actor' => $this->user('clinical_supervisor')->id],
+            'users',
+        );
+        $this->assertStringContainsString('result:deactivated', $deactivate);
+        $this->assertStringContainsString('result:rejected:therapist', $decision);
+        $this->assertSame($old->user_id, $patient->fresh()->therapist_id);
+        $this->assertSame($old->user_id, $switch->subscription->fresh()->therapist_id);
+        $this->assertSame('requested', $switch->fresh()->status);
+        $this->assertFalse($target->user->fresh()->is_active);
+    }
+
+    public function test_final_switch_first_serializes_before_deactivation_without_deadlock(): void
+    {
+        $old = $this->therapist();
+        $target = $this->therapist();
+        $patient = $this->patient($old);
+        $switch = $this->acceptedSwitch($patient, $old, $target);
+        [$decision, $deactivate] = $this->race(
+            ['operation' => 'switch', 'switch' => $switch->id, 'actor' => $this->user('clinical_supervisor')->id],
+            ['operation' => 'deactivate', 'therapist' => $target->user_id, 'actor' => $this->user('super_admin')->id],
+            'users',
+        );
+        $this->assertStringContainsString('result:switched', $decision);
+        $this->assertStringContainsString('result:deactivated', $deactivate);
+        $this->assertSame($target->user_id, $patient->fresh()->therapist_id);
+        $this->assertSame($target->user_id, $switch->subscription->fresh()->therapist_id);
+        $this->assertSame('approved', $switch->fresh()->status);
+        $this->assertFalse($target->user->fresh()->is_active);
     }
 }

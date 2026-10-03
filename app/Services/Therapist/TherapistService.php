@@ -21,7 +21,9 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 
 class TherapistService
@@ -50,7 +52,7 @@ class TherapistService
     {
         $therapist = $this->therapists->findByUserId($userId);
 
-        if (! $therapist || $therapist->approval_status !== ApprovalStatus::APPROVED) {
+        if (! $therapist || ! $therapist->isBookable()) {
             throw ValidationException::withMessages(['therapist_id' => 'Therapist not found.']);
         }
 
@@ -265,6 +267,10 @@ class TherapistService
     public function decideApproval(string $therapistUserId, ApprovalStatus $status, User $admin, ?string $note = null): Therapist
     {
         $therapist = DB::transaction(function () use ($therapistUserId, $status, $admin, $note) {
+            if (! User::whereKey($therapistUserId)->exists()) {
+                throw ValidationException::withMessages(['therapist' => 'Therapist not found.']);
+            }
+            AccountFileFence::lock([$therapistUserId], requireActive: false);
             $therapist = Therapist::whereKey($therapistUserId)->lockForUpdate()->first();
 
             if (! $therapist) {
@@ -281,8 +287,8 @@ class TherapistService
                 throw new ConflictException("Therapist is already {$therapist->approval_status->value}.");
             }
 
-            if ($status === ApprovalStatus::APPROVED && ! $therapist->license_file_path) {
-                throw ValidationException::withMessages(['therapist' => 'Cannot approve a therapist without a license file.']);
+            if ($status === ApprovalStatus::APPROVED) {
+                $this->assertLicenseExists($therapist);
             }
 
             $this->therapists->update($therapist, ['approval_status' => $status->value]);
@@ -303,15 +309,44 @@ class TherapistService
     /** Admin-only: change how many distinct clients a therapist may carry. */
     public function updateClientsLimit(Therapist $therapist, int $limit, User $admin): Therapist
     {
-        $previous = $therapist->clients_limit;
-        $this->therapists->update($therapist, ['clients_limit' => $limit]);
+        return DB::transaction(function () use ($therapist, $limit, $admin) {
+            $therapist = Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
+            $previous = $therapist->clients_limit;
+            $this->therapists->update($therapist, ['clients_limit' => $limit]);
 
-        $this->audit->record($admin, AuditLogService::THERAPIST_LIMIT_CHANGED, $therapist->user_id, [
-            'from' => $previous,
-            'to' => $limit,
-        ]);
+            $this->audit->record($admin, AuditLogService::THERAPIST_LIMIT_CHANGED, $therapist->user_id, [
+                'from' => $previous,
+                'to' => $limit,
+            ]);
 
-        return $therapist->refresh();
+            return $therapist->refresh();
+        });
+    }
+
+    private function assertLicenseExists(Therapist $therapist): void
+    {
+        $path = $therapist->license_file_path;
+        try {
+            $safePath = app(SecureFileService::class)->sanitize($path ?? '');
+        } catch (AccessDeniedHttpException) {
+            throw ValidationException::withMessages(['therapist' => 'A valid license file is required. Upload it again.']);
+        }
+        if ($safePath !== $path || ! str_starts_with($safePath, "licenses/{$therapist->user_id}/")) {
+            throw ValidationException::withMessages(['therapist' => 'A valid license file is required. Upload it again.']);
+        }
+
+        $disk = config('sakina.uploads_disk', 'local');
+        if ($disk === 'public' || config("filesystems.disks.{$disk}.visibility") === 'public') {
+            throw new ServiceUnavailableHttpException(5, 'Private license storage is not configured.');
+        }
+        try {
+            $exists = Storage::disk($disk)->exists($path);
+        } catch (\Throwable) {
+            throw new ServiceUnavailableHttpException(5, 'The license could not be verified. Please retry.');
+        }
+        if (! $exists) {
+            throw ValidationException::withMessages(['therapist' => 'The private license file is missing or invalid. Upload it again.']);
+        }
     }
 
     public function dashboard(Therapist $therapist): array

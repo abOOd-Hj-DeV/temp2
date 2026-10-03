@@ -685,6 +685,10 @@ class SessionService
      */
     private function assertBookableTherapist(Patient $patient, Therapist $therapist): void
     {
+        if (! $therapist->isBookable()) {
+            throw ValidationException::withMessages(['therapist_id' => 'Therapist not found.']);
+        }
+
         if ($patient->therapist_id !== null && $patient->therapist_id !== $therapist->user_id) {
             throw ValidationException::withMessages([
                 'therapist_id' => 'Sessions can only be booked with your assigned therapist. Request a therapist switch to change it.',
