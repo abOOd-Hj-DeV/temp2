@@ -6,7 +6,7 @@ use App\Models\ParallelLayer;
 use App\Models\Therapist;
 use App\Services\AuditLogService;
 use App\Services\Patient\ClinicalEventDelivery;
-use Illuminate\Support\Facades\DB;
+use App\Services\Patient\ClinicalMutationFence;
 use Illuminate\Support\Str;
 
 /**
@@ -33,7 +33,7 @@ class ParallelLayerService
 
     public function save(Therapist $therapist, string $patientId, array $content): ParallelLayer
     {
-        return DB::transaction(function () use ($therapist, $patientId, $content) {
+        return ClinicalMutationFence::run($patientId, function () use ($therapist, $patientId, $content) {
             $patient = $this->clients->requireActiveClient($therapist, $patientId);
 
             $layer = ParallelLayer::where('therapist_id', $therapist->user_id)

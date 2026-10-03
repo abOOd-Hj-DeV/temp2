@@ -8,11 +8,10 @@ use App\Models\Therapist;
 use App\Models\TherapistBlockedPeriod;
 use App\Models\TherapySession;
 use App\Services\AuditLogService;
-use App\Services\Session\BookingLocks;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Support\SessionClock;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -43,25 +42,25 @@ class TherapistBlockedPeriodService
      */
     public function create(Therapist $therapist, array $data): TherapistBlockedPeriod
     {
-        $tz = $this->timezoneOf($therapist);
-        $today = Carbon::now($tz)->toDateString();
-        $start = substr((string) $data['start_date'], 0, 10);
-        $end = substr((string) ($data['end_date'] ?? $start), 0, 10);
+        return ClinicalMutationFence::run($therapist->user_id, function () use ($therapist, $data) {
+            $therapist = Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
+            $tz = $this->timezoneOf($therapist);
+            $today = Carbon::now($tz)->toDateString();
+            $start = substr((string) $data['start_date'], 0, 10);
+            $end = substr((string) ($data['end_date'] ?? $start), 0, 10);
 
-        if ($start < $today) {
-            throw ValidationException::withMessages(['start_date' => 'Blocked periods cannot start in the past.']);
-        }
+            if ($start < $today) {
+                throw ValidationException::withMessages(['start_date' => 'Blocked periods cannot start in the past.']);
+            }
 
-        if ($end < $start) {
-            throw ValidationException::withMessages(['end_date' => 'End date must be on or after the start date.']);
-        }
+            if ($end < $start) {
+                throw ValidationException::withMessages(['end_date' => 'End date must be on or after the start date.']);
+            }
 
-        if (Carbon::parse($start)->diffInDays(Carbon::parse($end)) + 1 > self::MAX_DAYS) {
-            throw ValidationException::withMessages(['end_date' => 'A blocked period cannot exceed '.self::MAX_DAYS.' days.']);
-        }
+            if (Carbon::parse($start)->diffInDays(Carbon::parse($end)) + 1 > self::MAX_DAYS) {
+                throw ValidationException::withMessages(['end_date' => 'A blocked period cannot exceed '.self::MAX_DAYS.' days.']);
+            }
 
-        return DB::transaction(function () use ($therapist, $data, $start, $end, $tz) {
-            $therapist = BookingLocks::therapists([$therapist->user_id])->firstOrFail();
             $overlaps = TherapistBlockedPeriod::where('therapist_id', $therapist->user_id)
                 ->whereDate('start_date', '<=', $end)
                 ->whereDate('end_date', '>=', $start)
@@ -96,8 +95,8 @@ class TherapistBlockedPeriodService
 
     public function delete(Therapist $therapist, string $id): void
     {
-        DB::transaction(function () use ($therapist, $id) {
-            $therapist = BookingLocks::therapists([$therapist->user_id])->firstOrFail();
+        ClinicalMutationFence::run($therapist->user_id, function () use ($therapist, $id) {
+            Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
             $period = TherapistBlockedPeriod::where('therapist_id', $therapist->user_id)->whereKey($id)->lockForUpdate()->firstOrFail();
             $period->delete();
 

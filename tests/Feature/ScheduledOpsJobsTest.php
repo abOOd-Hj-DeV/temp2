@@ -161,11 +161,13 @@ class ScheduledOpsJobsTest extends TestCase
         $this->assertSame(100, $snap['score']);
         $this->assertSame(ComplianceLevel::HIGH, $snap['level']);
 
-        // Modules count 40%: 7/7 mood (60) + 1/4 modules (10) => 70 => medium.
+        // Only two modules are accessible: 7/7 mood (60) + 1/2 modules (20) => 80.
         $this->assignModules(4, 1);
         $snap = $service->snapshot($this->patient, now());
-        $this->assertSame(70, $snap['score']);
-        $this->assertSame(ComplianceLevel::MEDIUM, $snap['level']);
+        $this->assertSame(2, $snap['modules_due']);
+        $this->assertSame(1, $snap['modules_completed']);
+        $this->assertSame(80, $snap['score']);
+        $this->assertSame(ComplianceLevel::HIGH, $snap['level']);
     }
 
     public function test_weekly_job_sets_low_level_and_raises_one_non_compliance_flag(): void

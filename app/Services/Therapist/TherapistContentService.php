@@ -2,13 +2,14 @@
 
 namespace App\Services\Therapist;
 
+use App\Exceptions\ConflictException;
 use App\Models\Patient;
 use App\Models\Therapist;
 use App\Models\TherapistContent;
 use App\Services\AuditLogService;
+use App\Services\Patient\ClinicalMutationFence;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -48,9 +49,8 @@ class TherapistContentService
     public function create(Therapist $therapist, array $data): TherapistContent
     {
         $patientIds = $this->targetIds($data);
-        $patients = $this->requireClients($therapist, $patientIds);
-
-        $item = DB::transaction(function () use ($therapist, $data, $patients) {
+        $item = ClinicalMutationFence::run($patientIds, function () use ($therapist, $data, $patientIds) {
+            $patients = $this->requireClients($therapist, $patientIds);
             $item = TherapistContent::create([
                 'id' => (string) Str::uuid(),
                 'therapist_id' => $therapist->user_id,
@@ -81,58 +81,82 @@ class TherapistContentService
     /** Edits the item itself; sharing is managed through assign()/unassign(). */
     public function update(Therapist $therapist, string $id, array $data): TherapistContent
     {
-        $item = $this->findOrFail($therapist, $id);
+        return $this->mutate($therapist, $id, function ($item) use ($therapist, $data) {
+            $item->update([
+                'title' => $data['title'] ?? $item->title,
+                'content_type' => $data['content_type'] ?? $item->content_type,
+                'body' => array_key_exists('body', $data) ? $data['body'] : $item->body,
+                'url' => array_key_exists('url', $data) ? $data['url'] : $item->url,
+            ]);
 
-        $item->update([
-            'title' => $data['title'] ?? $item->title,
-            'content_type' => $data['content_type'] ?? $item->content_type,
-            'body' => array_key_exists('body', $data) ? $data['body'] : $item->body,
-            'url' => array_key_exists('url', $data) ? $data['url'] : $item->url,
-        ]);
+            $this->audit->record($therapist->user, AuditLogService::CONTENT_ITEM_UPDATED, $item->id);
 
-        $this->audit->record($therapist->user, AuditLogService::CONTENT_ITEM_UPDATED, $item->id);
-
-        return $item->refresh();
+            return $item->refresh();
+        });
     }
 
     public function delete(Therapist $therapist, string $id): void
     {
-        $item = $this->findOrFail($therapist, $id);
-        $item->delete();
+        $this->mutate($therapist, $id, function ($item) use ($therapist, $id) {
+            $item->delete();
 
-        $this->audit->record($therapist->user, AuditLogService::CONTENT_ITEM_DELETED, $id);
+            $this->audit->record($therapist->user, AuditLogService::CONTENT_ITEM_DELETED, $id);
+        });
     }
 
     /** Share an existing library item with more clients (idempotent). */
     public function assign(Therapist $therapist, string $id, array $patientIds): TherapistContent
     {
-        $item = $this->findOrFail($therapist, $id);
-        $patients = $this->requireClients($therapist, $patientIds);
+        return $this->mutate($therapist, $id, function ($item) use ($therapist, $patientIds) {
+            $this->attach($therapist, $item, $this->requireClients($therapist, $patientIds));
 
-        DB::transaction(fn () => $this->attach($therapist, $item, $patients));
-
-        return $item->refresh();
+            return $item->refresh();
+        }, $patientIds);
     }
 
     public function unassign(Therapist $therapist, string $id, string $patientId): TherapistContent
     {
+        return $this->mutate($therapist, $id, function ($item) use ($therapist, $patientId) {
+            $detached = $item->assignedPatients()->detach($patientId);
+
+            if ($detached === 0) {
+                throw new NotFoundHttpException('This item is not shared with that client.');
+            }
+
+            if ($item->patient_id === $patientId) {
+                $item->update(['patient_id' => $item->assignedPatients()->value('patients.user_id')]);
+            }
+
+            $this->audit->record($therapist->user, AuditLogService::CONTENT_ITEM_UNASSIGNED, $item->id, [
+                'patient_id' => $patientId,
+            ]);
+
+            return $item->refresh();
+        });
+    }
+
+    private function mutate(Therapist $therapist, string $id, callable $operation, array $additionalIds = []): mixed
+    {
         $item = $this->findOrFail($therapist, $id);
+        $owners = $this->ownerIds($item);
 
-        $detached = $item->assignedPatients()->detach($patientId);
+        return ClinicalMutationFence::run(array_merge($owners, $additionalIds), function () use ($therapist, $id, $owners, $operation) {
+            $item = TherapistContent::whereKey($id)->where('therapist_id', $therapist->user_id)->lockForUpdate()->firstOrFail();
+            if ($this->ownerIds($item) !== $owners) {
+                throw new ConflictException('Content assignments changed; retry the operation.');
+            }
+            $this->requireClients($therapist, $owners);
 
-        if ($detached === 0) {
-            throw new NotFoundHttpException('This item is not shared with that client.');
-        }
+            return $operation($item);
+        });
+    }
 
-        if ($item->patient_id === $patientId) {
-            $item->update(['patient_id' => $item->assignedPatients()->value('patients.user_id')]);
-        }
+    private function ownerIds(TherapistContent $item): array
+    {
+        $ids = $item->assignedPatients()->pluck('patients.user_id')->push($item->patient_id)->filter()->unique()->values()->all();
+        sort($ids);
 
-        $this->audit->record($therapist->user, AuditLogService::CONTENT_ITEM_UNASSIGNED, $item->id, [
-            'patient_id' => $patientId,
-        ]);
-
-        return $item->refresh();
+        return $ids;
     }
 
     /** Patient-side: everything shared with this patient. */
@@ -181,7 +205,7 @@ class TherapistContentService
     /** @return Collection<int, Patient> */
     private function requireClients(Therapist $therapist, array $patientIds): Collection
     {
-        return collect($patientIds)->map(fn (string $id) => $this->clients->requireClient($therapist, $id));
+        return collect($patientIds)->map(fn (string $id) => $this->clients->requireActiveClient($therapist, $id));
     }
 
     private function findOrFail(Therapist $therapist, string $id): TherapistContent

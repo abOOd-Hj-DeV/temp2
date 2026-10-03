@@ -20,13 +20,9 @@ use Illuminate\Database\Eloquent\Collection;
  */
 final class BookingLocks
 {
-    public static function patient(string $id, bool $requireAvailable = false): Patient
+    public static function patient(string $id): Patient
     {
-        if ($requireAvailable) {
-            AccountFileFence::lock([$id]);
-        } else {
-            User::whereKey($id)->lockForUpdate()->firstOrFail();
-        }
+        AccountFileFence::lock([$id]);
 
         return Patient::whereKey($id)->lockForUpdate()->firstOrFail();
     }
@@ -52,6 +48,7 @@ final class BookingLocks
     public static function session(string $id): TherapySession
     {
         $snapshot = TherapySession::findOrFail($id);
+        AccountFileFence::lock([$snapshot->patient_id, $snapshot->therapist_id]);
         $patient = self::patient($snapshot->patient_id);
         self::subscriptions($patient);
         self::therapists([$snapshot->therapist_id]);

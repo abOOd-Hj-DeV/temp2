@@ -13,13 +13,13 @@ use App\Models\User;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Services\RedFlagService;
 use App\Services\Session\BookingLocks;
 use App\Support\SessionClock;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -86,7 +86,7 @@ class TherapistSwitchService
         }
 
         try {
-            $switch = DB::transaction(function () use ($patient, $target, $subscription, $reason, $actor) {
+            $switch = ClinicalMutationFence::run($patient->user_id, function () use ($patient, $target, $subscription, $reason, $actor) {
                 $patient = BookingLocks::patient($patient->user_id);
                 BookingLocks::subscriptions($patient);
                 $target = BookingLocks::therapists([$target->user_id])->firstOrFail();
@@ -110,7 +110,6 @@ class TherapistSwitchService
                     'timestamp' => now(),
                     'status' => 'requested',
                 ]);
-
                 $this->audit->record($actor, AuditLogService::THERAPIST_SWITCH_REQUESTED, $switch->id, [
                     'from' => $switch->old_therapist_id, 'to' => $switch->new_therapist_id,
                 ]);
@@ -160,7 +159,7 @@ class TherapistSwitchService
      */
     public function therapistDecide(TherapistSwitch $switch, bool $accept, User $therapist, ?string $note = null): TherapistSwitch
     {
-        $switch = DB::transaction(function () use ($switch, $accept, $therapist, $note) {
+        $switch = ClinicalMutationFence::run($switch->patient_id, function () use ($switch, $accept, $therapist, $note) {
             $snapshot = TherapistSwitch::findOrFail($switch->id);
             $patient = BookingLocks::patient($snapshot->patient_id);
             BookingLocks::subscriptions($patient);
@@ -205,7 +204,7 @@ class TherapistSwitchService
      */
     public function decide(TherapistSwitch $switch, bool $approve, User $admin, ?string $note = null): TherapistSwitch
     {
-        $switch = DB::transaction(function () use ($switch, $approve, $admin, $note) {
+        $switch = ClinicalMutationFence::run($switch->patient_id, function () use ($switch, $approve, $admin, $note) {
             $snapshot = TherapistSwitch::findOrFail($switch->id);
             $patient = BookingLocks::patient($snapshot->patient_id);
             BookingLocks::subscriptions($patient);

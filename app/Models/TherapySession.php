@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use App\Enums\PaymentStatus;
 use App\Enums\SessionMedium;
 use App\Enums\SessionStatus;
@@ -26,6 +27,7 @@ class TherapySession extends Model
     ];
 
     protected $casts = [
+        'summary' => ClinicalEncrypted::class,
         'session_date' => 'date',
         'price' => 'decimal:2',
         'is_initial' => 'boolean',

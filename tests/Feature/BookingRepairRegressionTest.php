@@ -6,6 +6,7 @@ use App\Enums\SessionStatus;
 use App\Exceptions\ConflictException;
 use App\Models\AuditLog;
 use App\Models\Patient;
+use App\Models\SessionReportRevision;
 use App\Models\Subscription;
 use App\Models\Therapist;
 use App\Models\TherapistSwitch;
@@ -28,6 +29,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Tests\Concerns\CommittedDatabase;
 use Tests\TestCase;
 
@@ -366,11 +368,14 @@ class BookingRepairRegressionTest extends TestCase
         $service->report($stale, $therapist->user, 'Second synthetic report');
         $final = $service->report($stale, $therapist->user, 'Third synthetic report');
         $this->assertSame(2, $final->report_revision);
-        $history = DB::table('booking_report_revisions')->where('session_id', $session->id)->orderBy('revision')->get();
+        $history = SessionReportRevision::where('session_id', $session->id)->orderBy('revision')->get();
         $this->assertCount(2, $history);
         $this->assertSame('Original synthetic report', $history[0]->previous_summary);
         $this->assertSame('Second synthetic report', $history[0]->new_summary);
         $this->assertSame($history[0]->new_summary, $history[1]->previous_summary);
+        $this->assertStringNotContainsString('Original synthetic report', $history[0]->getRawOriginal('previous_summary'));
+        $this->assertStringNotContainsString('Second synthetic report', $history[0]->getRawOriginal('new_summary'));
+        $this->assertStringNotContainsString('Third synthetic report', $final->getRawOriginal('summary'));
         $log = AuditLog::where('entity_id', $session->id)->where('action', 'session.report_revised')->get()->firstWhere('details.revision', 1);
         $this->assertSame(hash('sha256', 'Original synthetic report'), $log->details['previous_sha256']);
         $this->assertSame(hash('sha256', 'Second synthetic report'), $log->details['new_sha256']);
@@ -380,7 +385,7 @@ class BookingRepairRegressionTest extends TestCase
             $this->fail('Stored revision body must be immutable.');
         } catch (QueryException) {
             DB::rollBack();
-            $this->assertSame('Original synthetic report', DB::table('booking_report_revisions')->where('id', $history[0]->id)->value('previous_summary'));
+            $this->assertSame('Original synthetic report', SessionReportRevision::findOrFail($history[0]->id)->previous_summary);
         }
         DB::beginTransaction();
         try {
@@ -409,10 +414,12 @@ class BookingRepairRegressionTest extends TestCase
         $this->assertNotNull($patient->user->fresh()->anonymized_at);
         $this->assertSame('Current summary has no identifiers.', $session->fresh()->summary);
         $this->assertSame(0, DB::table('booking_report_revisions')->where('session_id', $session->id)->count());
-        $service->report($session, $therapist->user, 'Subsequent synthetic clinical report');
-        $record = DB::table('booking_report_revisions')->where('session_id', $session->id)->sole();
-        $this->assertNull($record->previous_summary);
-        $this->assertNull($record->new_summary);
-        $this->assertSame(hash('sha256', 'Subsequent synthetic clinical report'), $record->new_sha256);
+        try {
+            $service->report($session, $therapist->user, 'Subsequent synthetic clinical report');
+            $this->fail('Clinical writes cannot repopulate a patient account after erasure.');
+        } catch (AccessDeniedHttpException) {
+            $this->assertSame('Current summary has no identifiers.', $session->fresh()->summary);
+            $this->assertSame(0, DB::table('booking_report_revisions')->where('session_id', $session->id)->count());
+        }
     }
 }

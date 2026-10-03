@@ -6,12 +6,14 @@ use App\Enums\RedFlagPriority;
 use App\Models\RedFlag;
 use App\Models\User;
 use App\Services\NotificationService;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Services\RedFlagService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
 /**
  * Safety net for the clinical response chain: any high-priority or unassigned
@@ -56,42 +58,48 @@ class EscalateStaleRedFlagsJob implements ShouldQueue
 
     private function escalate(RedFlag $flag, Collection $staff, NotificationService $notifications): void
     {
-        $attempt = DB::transaction(function () use ($flag): ?int {
-            $locked = RedFlag::whereKey($flag->id)->whereNull('escalated_at')->lockForUpdate()->first();
+        try {
+            ClinicalMutationFence::run($flag->patient_id, function () use ($flag, $staff, $notifications) {
+                $attempt = DB::transaction(function () use ($flag): ?int {
+                    $locked = RedFlag::whereKey($flag->id)->whereNull('escalated_at')->lockForUpdate()->first();
 
-            if (! $locked) {
-                return null;
-            }
+                    if (! $locked) {
+                        return null;
+                    }
 
-            $attempt = $locked->escalation_attempts + 1;
-            RedFlag::whereKey($locked->id)->update(['escalation_attempts' => $attempt]);
+                    $attempt = $locked->escalation_attempts + 1;
+                    RedFlag::whereKey($locked->id)->update(['escalation_attempts' => $attempt]);
 
-            return $attempt;
-        });
+                    return $attempt;
+                });
 
-        if ($attempt === null) {
-            return;
+                if ($attempt === null) {
+                    return;
+                }
+
+                if ($staff->isEmpty()) {
+                    Log::critical('Stale red flag has no clinical staff to escalate to; will retry', [
+                        'red_flag_id' => $flag->id,
+                        'attempt' => $attempt,
+                    ]);
+
+                    return;
+                }
+
+                $delivered = $notifications->redFlagEscalated($flag, $staff);
+
+                RedFlag::whereKey($flag->id)->whereNull('escalated_at')->update(['escalated_at' => now()]);
+
+                Log::warning('Red flag escalated', [
+                    'red_flag_id' => $flag->id,
+                    'priority' => $flag->priority->value,
+                    'open_minutes' => $flag->created_at?->diffInMinutes(now()),
+                    'attempt' => $attempt,
+                    'staff_notified' => $delivered,
+                ]);
+            });
+        } catch (AccessDeniedHttpException) {
+            // A patient erased after the batch was selected must not receive a new escalation.
         }
-
-        if ($staff->isEmpty()) {
-            Log::critical('Stale red flag has no clinical staff to escalate to; will retry', [
-                'red_flag_id' => $flag->id,
-                'attempt' => $attempt,
-            ]);
-
-            return;
-        }
-
-        $delivered = $notifications->redFlagEscalated($flag, $staff);
-
-        RedFlag::whereKey($flag->id)->whereNull('escalated_at')->update(['escalated_at' => now()]);
-
-        Log::warning('Red flag escalated', [
-            'red_flag_id' => $flag->id,
-            'priority' => $flag->priority->value,
-            'open_minutes' => $flag->created_at?->diffInMinutes(now()),
-            'attempt' => $attempt,
-            'staff_notified' => $delivered,
-        ]);
     }
 }

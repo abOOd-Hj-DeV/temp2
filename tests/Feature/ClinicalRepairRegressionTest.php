@@ -493,7 +493,7 @@ class ClinicalRepairRegressionTest extends TestCase
     public function test_upgrade_encrypts_legacy_json_and_plaintext_without_losing_unique_safety_controls(): void
     {
         $baseline = array_values(array_filter(glob(database_path('migrations/*.php')),
-            fn ($path) => ! str_starts_with(basename($path), '2026_10_03_21000')));
+            fn ($path) => basename($path) < '2026_10_03_210001'));
         $this->artisan('migrate:fresh', ['--path' => $baseline, '--realpath' => true])->assertSuccessful();
         $this->seed(RolePermissionSeeder::class);
         $patientUser = $this->user('patient');

@@ -75,7 +75,7 @@ class RedFlagRepository implements RedFlagRepositoryInterface
             $updateData['updated_at'] = now();
         }
 
-        return RedFlag::where('id', $id)->update($updateData);
+        return RedFlag::find($id)?->update($updateData) ?? false;
     }
 
     public function assignTo(string $id, string $userId): bool

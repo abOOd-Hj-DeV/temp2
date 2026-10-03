@@ -7,11 +7,11 @@ use App\Models\Patient;
 use App\Models\Therapist;
 use App\Models\TherapistClientNote;
 use App\Models\TherapySession;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Services\Session\SessionService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -131,7 +131,7 @@ class TherapistClientService
 
     public function addNote(Therapist $therapist, string $patientId, string $body, ?string $sessionId = null): TherapistClientNote
     {
-        return DB::transaction(function () use ($therapist, $patientId, $body, $sessionId) {
+        return ClinicalMutationFence::run($patientId, function () use ($therapist, $patientId, $body, $sessionId) {
             $patient = $this->requireActiveClient($therapist, $patientId);
 
             if ($sessionId !== null) {
