@@ -6,7 +6,7 @@ use App\Enums\SessionStatus;
 use App\Models\TherapySession;
 use App\Repositories\Contracts\SessionRepositoryInterface;
 use App\Services\NotificationService;
-use App\Services\Patient\ClinicalMutationFence;
+use App\Services\Session\BookingLocks;
 use App\Support\SessionClock;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -41,12 +41,11 @@ class SendSessionRemindersJob implements ShouldQueue
 
         foreach ($candidates as $id) {
             try {
-                $snapshot = TherapySession::findOrFail($id);
-                ClinicalMutationFence::run([$snapshot->patient_id, $snapshot->therapist_id], function () use ($id, $label, $from, $to, $notifications): void {
-                    $session = TherapySession::whereKey($id)->lockForUpdate()->firstOrFail();
+                DB::transaction(function () use ($id, $label, $from, $to, $notifications): void {
+                    $session = BookingLocks::session($id, true);
                     $instant = SessionClock::fromStored($session->session_date, (string) $session->session_time)->startOfMinute();
 
-                    if ($session->patient_id !== $snapshot->patient_id || $session->status !== SessionStatus::CONFIRMED || ! $instant->between($from, $to)) {
+                    if ($session->status !== SessionStatus::CONFIRMED || ! $instant->between($from, $to)) {
                         return;
                     }
 

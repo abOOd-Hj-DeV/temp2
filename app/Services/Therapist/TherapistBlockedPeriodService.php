@@ -9,6 +9,7 @@ use App\Models\TherapistBlockedPeriod;
 use App\Models\TherapySession;
 use App\Services\AuditLogService;
 use App\Services\Patient\ClinicalMutationFence;
+use App\Services\Session\BookingLocks;
 use App\Support\SessionClock;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -43,7 +44,7 @@ class TherapistBlockedPeriodService
     public function create(Therapist $therapist, array $data): TherapistBlockedPeriod
     {
         return ClinicalMutationFence::run($therapist->user_id, function () use ($therapist, $data) {
-            $therapist = Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
+            $therapist = BookingLocks::therapists([$therapist->user_id])->firstOrFail();
             $tz = $this->timezoneOf($therapist);
             $today = Carbon::now($tz)->toDateString();
             $start = substr((string) $data['start_date'], 0, 10);
@@ -96,7 +97,7 @@ class TherapistBlockedPeriodService
     public function delete(Therapist $therapist, string $id): void
     {
         ClinicalMutationFence::run($therapist->user_id, function () use ($therapist, $id) {
-            Therapist::whereKey($therapist->user_id)->lockForUpdate()->firstOrFail();
+            BookingLocks::therapists([$therapist->user_id])->firstOrFail();
             $period = TherapistBlockedPeriod::where('therapist_id', $therapist->user_id)->whereKey($id)->lockForUpdate()->firstOrFail();
             $period->delete();
 
