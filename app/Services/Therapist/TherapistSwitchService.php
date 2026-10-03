@@ -86,7 +86,7 @@ class TherapistSwitchService
         }
 
         try {
-            $switch = DB::transaction(function () use ($patient, $target, $subscription, $reason) {
+            $switch = DB::transaction(function () use ($patient, $target, $subscription, $reason, $actor) {
                 $patient = BookingLocks::patient($patient->user_id);
                 BookingLocks::subscriptions($patient);
                 $target = BookingLocks::therapists([$target->user_id])->firstOrFail();
@@ -100,7 +100,7 @@ class TherapistSwitchService
                     throw new ConflictException('You already have a pending therapist switch request.');
                 }
 
-                return TherapistSwitch::create([
+                $switch = TherapistSwitch::create([
                     'id' => (string) Str::uuid(),
                     'patient_id' => $patient->user_id,
                     'old_therapist_id' => $patient->therapist_id,
@@ -110,16 +110,18 @@ class TherapistSwitchService
                     'timestamp' => now(),
                     'status' => 'requested',
                 ]);
+
+                $this->audit->record($actor, AuditLogService::THERAPIST_SWITCH_REQUESTED, $switch->id, [
+                    'from' => $switch->old_therapist_id, 'to' => $switch->new_therapist_id,
+                ]);
+
+                return $switch;
             });
         } catch (UniqueConstraintViolationException) {
             throw new ConflictException('You already have a pending therapist switch request.');
         }
 
         $this->notifications->deliver('therapistSwitchRequested', $switch);
-
-        $this->audit->record($actor, AuditLogService::THERAPIST_SWITCH_REQUESTED, $switch->id, [
-            'from' => $switch->old_therapist_id, 'to' => $switch->new_therapist_id,
-        ]);
 
         return $switch;
     }
