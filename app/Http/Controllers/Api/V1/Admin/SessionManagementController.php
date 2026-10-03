@@ -8,6 +8,7 @@ use App\Services\AuditLogService;
 use App\Services\Session\SessionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class SessionManagementController extends Controller
 {
@@ -26,13 +27,16 @@ class SessionManagementController extends Controller
             'reason' => ['required', 'string', 'max:500'],
         ]);
 
-        $session = $this->sessions->cancel($session, $request->user());
+        $session = DB::transaction(function () use ($request, $session, $data) {
+            $session = $this->sessions->cancel($session, $request->user());
+            $this->audit->record($request->user(), AuditLogService::SESSION_CANCELLED_BY_STAFF, $session->id, [
+                'reason' => $data['reason'],
+                'patient_id' => $session->patient_id,
+                'therapist_id' => $session->therapist_id,
+            ]);
 
-        $this->audit->record($request->user(), AuditLogService::SESSION_CANCELLED_BY_STAFF, $session->id, [
-            'reason' => $data['reason'],
-            'patient_id' => $session->patient_id,
-            'therapist_id' => $session->therapist_id,
-        ]);
+            return $session;
+        });
 
         return response()->json([
             'message' => 'Session cancelled.',

@@ -12,6 +12,7 @@ use App\Models\NotificationOutbox;
 use App\Models\Package;
 use App\Models\Patient;
 use App\Models\Program;
+use App\Models\RedFlag;
 use App\Models\Support;
 use App\Models\Therapist;
 use App\Models\TherapySession;
@@ -35,6 +36,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use Laravel\Sanctum\Sanctum;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\CommittedDatabase;
 use Tests\TestCase;
@@ -47,7 +49,7 @@ class OpsCorrectiveRegressionTest extends TestCase
     {
         parent::setUp();
         $this->travelTo(Carbon::parse('2026-11-02 10:05:00', 'UTC'));
-        config(['app.key' => 'base64:'.base64_encode(str_repeat('t', 32))]);
+        config(['app.key' => 'base64:'.base64_encode(random_bytes(32))]);
         $this->app->forgetInstance('encrypter');
         Http::preventStrayRequests();
         $this->seed(RolePermissionSeeder::class);
@@ -73,13 +75,82 @@ class OpsCorrectiveRegressionTest extends TestCase
         ]);
     }
 
-    private function rejectAudit(): void
+    private function rejectAudit(?string $action = null): void
     {
+        $condition = $action === null ? 'true' : 'NEW.action = '.DB::getPdo()->quote($action);
         if (DB::getDriverName() === 'pgsql') {
-            DB::unprepared("CREATE OR REPLACE FUNCTION ops_corrective_reject_audit() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'synthetic audit failure'; END; $$ LANGUAGE plpgsql;
+            DB::unprepared("CREATE OR REPLACE FUNCTION ops_corrective_reject_audit() RETURNS trigger AS $$ BEGIN IF {$condition} THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql;
                 CREATE TRIGGER ops_corrective_reject_audit BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION ops_corrective_reject_audit();");
         } else {
-            DB::unprepared("CREATE TRIGGER ops_corrective_reject_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;");
+            DB::unprepared("CREATE TRIGGER ops_corrective_reject_audit BEFORE INSERT ON audit_logs WHEN {$condition} BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;");
+        }
+    }
+
+    public static function adminAuditActions(): array
+    {
+        return [['assign'], ['resolve'], ['cancel']];
+    }
+
+    private function adminWorkflow(string $action): array
+    {
+        $actor = $this->user('super_admin');
+        Sanctum::actingAs($actor, ['*'], 'api');
+        [$session] = $this->appointment();
+        if ($action === 'cancel') {
+            return ["/api/v1/admin/sessions/{$session->id}/cancel", ['reason' => 'Synthetic cancellation'],
+                fn () => $session->fresh()->status->value, 'confirmed', 'cancelled', AuditLogService::SESSION_CANCELLED_BY_STAFF];
+        }
+        $assignee = $this->user('clinical_supervisor');
+        $flag = RedFlag::create([
+            'patient_id' => $session->patient_id, 'type' => 'low_mood', 'priority' => 'high',
+            'status' => 'open', 'description' => 'Synthetic clinical flag', 'assigned_to' => $actor->id,
+        ]);
+
+        return $action === 'assign'
+            ? ["/api/v1/admin/red-flags/{$flag->id}/assign", ['user_id' => $assignee->id],
+                fn () => $flag->fresh()->assigned_to, $actor->id, $assignee->id, AuditLogService::RED_FLAG_ASSIGNED]
+            : ["/api/v1/admin/red-flags/{$flag->id}/status", ['status' => 'resolved', 'action_taken' => 'Synthetic clinical follow-up'],
+                fn () => [$flag->fresh()->status, $flag->fresh()->action_taken], ['open', null], ['resolved', 'Synthetic clinical follow-up'], AuditLogService::RED_FLAG_UPDATED];
+    }
+
+    #[DataProvider('adminAuditActions')]
+    public function test_controller_audit_failure_rolls_back_clinical_state_and_delivery(string $action): void
+    {
+        Queue::fake();
+        $sender = $this->sender();
+        [$url, $payload, $state, $before, , $auditAction] = $this->adminWorkflow($action);
+        $this->rejectAudit($auditAction);
+        $this->withoutExceptionHandling();
+        try {
+            $this->postJson($url, $payload);
+            $this->fail('The controller mandatory audit must reject the entire workflow.');
+        } catch (QueryException $exception) {
+            $this->assertStringContainsString('synthetic audit failure', $exception->getMessage());
+        }
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertSame($before, $state());
+        $this->assertSame(0, AuditLog::count());
+        $this->assertDatabaseCount('notifications', 0);
+        $this->assertDatabaseCount('notification_logs', 0);
+        $this->assertDatabaseCount('ops_notification_outbox', 0);
+        $this->assertCount(0, $sender->messages);
+        $this->assertNotEmpty(DB::select('SELECT 1'));
+    }
+
+    #[DataProvider('adminAuditActions')]
+    public function test_controller_workflow_commits_business_state_with_mandatory_audit(string $action): void
+    {
+        Queue::fake();
+        $this->sender();
+        [$url, $payload, $state, , $after, $auditAction] = $this->adminWorkflow($action);
+        $this->postJson($url, $payload)->assertOk();
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertSame($after, $state());
+        $this->assertSame(1, AuditLog::where('action', $auditAction)->count());
+        if ($action === 'resolve') {
+            $this->assertSame(0, NotificationLog::count());
+        } else {
+            $this->assertGreaterThan(0, NotificationLog::count());
         }
     }
 

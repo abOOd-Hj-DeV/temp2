@@ -14,6 +14,7 @@ use App\Models\RedFlag;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\RedFlagRepositoryInterface;
+use App\Services\Files\AccountFileFence;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -252,19 +253,15 @@ class RedFlagService
      */
     public function reassign(RedFlag $flag, User $assignee): RedFlag
     {
-        $this->redFlags->assignTo($flag->id, $assignee->id);
-        $flag->refresh();
+        return DB::transaction(function () use ($flag, $assignee) {
+            AccountFileFence::lock([$flag->patient_id]);
+            $flag = RedFlag::whereKey($flag->id)->lockForUpdate()->firstOrFail();
+            $this->redFlags->assignTo($flag->id, $assignee->id);
+            $flag->refresh();
+            $this->notifications->deliver('redFlagRaised', $flag);
 
-        try {
-            $this->notifications->redFlagRaised($flag);
-        } catch (\Throwable $e) {
-            Log::error('Red flag reassignment notification failed', [
-                'red_flag_id' => $flag->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        return $flag;
+            return $flag;
+        });
     }
 
     public function getStats(array $filters = []): array

@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Api\V1\Admin;
 use App\Enums\RedFlagType;
 use App\Http\Controllers\Controller;
 use App\Services\AuditLogService;
+use App\Services\Files\AccountFileFence;
 use App\Services\RedFlagService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -53,16 +55,22 @@ class RedFlagController extends Controller
 
         $flag = $this->redFlags->find($id) ?? throw new NotFoundHttpException('Red flag not found.');
 
-        $assignee = $this->redFlags->resolveAssignee($flag, $data['user_id']);
+        $flag = DB::transaction(function () use ($request, $flag, $data) {
+            AccountFileFence::lock([$flag->patient_id]);
+            $flag->refresh();
+            $assignee = $this->redFlags->resolveAssignee($flag, $data['user_id']);
 
-        if (! $assignee) {
-            throw ValidationException::withMessages([
-                'user_id' => 'Assignee must be active clinical staff or an approved therapist treating this patient.',
-            ]);
-        }
+            if (! $assignee) {
+                throw ValidationException::withMessages([
+                    'user_id' => 'Assignee must be active clinical staff or an approved therapist treating this patient.',
+                ]);
+            }
 
-        $flag = $this->redFlags->reassign($flag, $assignee);
-        $this->audit->record($request->user(), AuditLogService::RED_FLAG_ASSIGNED, $flag->id, ['assigned_to' => $assignee->id]);
+            $flag = $this->redFlags->reassign($flag, $assignee);
+            $this->audit->record($request->user(), AuditLogService::RED_FLAG_ASSIGNED, $flag->id, ['assigned_to' => $assignee->id]);
+
+            return $flag;
+        });
 
         return response()->json(['message' => 'Red flag assigned.', 'data' => $this->redFlags->toArray($flag)]);
     }
@@ -76,10 +84,13 @@ class RedFlagController extends Controller
 
         $flag = $this->redFlags->find($id) ?? throw new NotFoundHttpException('Red flag not found.');
 
-        $this->redFlags->updateStatus($flag->id, $data['status'], $data['action_taken'] ?? null);
-        $this->audit->record($request->user(), AuditLogService::RED_FLAG_UPDATED, $flag->id, [
-            'status' => $data['status'],
-        ]);
+        DB::transaction(function () use ($request, $flag, $data) {
+            AccountFileFence::lock([$flag->patient_id]);
+            $this->redFlags->updateStatus($flag->id, $data['status'], $data['action_taken'] ?? null);
+            $this->audit->record($request->user(), AuditLogService::RED_FLAG_UPDATED, $flag->id, [
+                'status' => $data['status'],
+            ]);
+        });
 
         return response()->json(['message' => 'Red flag updated.', 'data' => $this->redFlags->toArray($flag->refresh())]);
     }
