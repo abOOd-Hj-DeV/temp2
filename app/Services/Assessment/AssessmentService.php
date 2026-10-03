@@ -12,9 +12,9 @@ use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
 use App\Services\NotificationService;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Services\RedFlagService;
 use Illuminate\Database\UniqueConstraintViolationException;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -57,7 +57,8 @@ class AssessmentService
         $score = array_sum($answers);
 
         try {
-            $assessment = DB::transaction(function () use ($patient, $type, $answers, $score) {
+            $assessment = ClinicalMutationFence::run($patient->user_id, function () use ($patient, $type, $answers, $score) {
+                $patient = Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
                 $assessment = $this->assessments->create([
                     'id' => (string) Str::uuid(),
                     'patient_id' => $patient->user_id,

@@ -7,6 +7,7 @@ use App\Models\PatientModule;
 use App\Models\Program;
 use App\Models\Therapist;
 use App\Services\AuditLogService;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Services\Program\ModuleAccessService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -43,7 +44,7 @@ class TherapistModuleService
 
     public function hide(Therapist $therapist, string $patientId, string $moduleId): array
     {
-        return DB::transaction(function () use ($therapist, $patientId, $moduleId) {
+        return ClinicalMutationFence::run($patientId, function () use ($therapist, $patientId, $moduleId) {
             $patient = $this->clients->requireActiveClient($therapist, $patientId);
             $module = Module::find($moduleId) ?? throw new NotFoundHttpException('Module not found.');
 
@@ -72,7 +73,7 @@ class TherapistModuleService
 
     public function unhide(Therapist $therapist, string $patientId, string $moduleId): array
     {
-        return DB::transaction(function () use ($therapist, $patientId, $moduleId) {
+        return ClinicalMutationFence::run($patientId, function () use ($therapist, $patientId, $moduleId) {
             $patient = $this->clients->requireActiveClient($therapist, $patientId);
             $module = Module::find($moduleId) ?? throw new NotFoundHttpException('Module not found.');
 

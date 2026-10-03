@@ -18,7 +18,6 @@ use App\Repositories\Contracts\PatientRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\Program\ModuleAccessService;
 use App\Services\RedFlagService;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
@@ -198,42 +197,46 @@ class PatientDashboardService
      */
     public function completeModule(User $user, string $moduleId, ?array $homework = null): array
     {
-        $patient = $this->requireProfile($user);
-        $module = $this->findModule($moduleId);
-        $this->requireUnlocked($patient, $module);
+        return ClinicalMutationFence::run($user->id, function () use ($user, $moduleId, $homework) {
+            $patient = $this->requireProfile($user);
+            $module = $this->findModule($moduleId);
+            $this->requireUnlocked($patient, $module);
 
-        $progress = PatientModule::firstOrCreate(
-            ['patient_id' => $patient->user_id, 'module_id' => $module->id],
-            ['id' => (string) Str::uuid(), 'status' => 'pending'],
-        );
+            $progress = PatientModule::firstOrCreate(
+                ['patient_id' => $patient->user_id, 'module_id' => $module->id],
+                ['id' => (string) Str::uuid(), 'status' => 'pending'],
+            );
 
-        if ($homework !== null) {
-            $progress->fill(['homework' => $homework, 'homework_submitted_at' => now()])->save();
-        }
+            if ($homework !== null) {
+                $progress->fill(['homework' => $homework, 'homework_submitted_at' => now()])->save();
+            }
 
-        $progress->markAsCompleted();
+            $progress->markAsCompleted();
 
-        return [
-            'module' => $this->moduleToArray($this->moduleAccess->stateFor($patient, $module)),
-        ];
+            return [
+                'module' => $this->moduleToArray($this->moduleAccess->stateFor($patient, $module)),
+            ];
+        });
     }
 
     /** Saves (or replaces) the patient's answers to the module's homework without completing it. */
     public function submitHomework(User $user, string $moduleId, array $answers): array
     {
-        $patient = $this->requireProfile($user);
-        $module = $this->findModule($moduleId);
-        $this->requireUnlocked($patient, $module);
+        return ClinicalMutationFence::run($user->id, function () use ($user, $moduleId, $answers) {
+            $patient = $this->requireProfile($user);
+            $module = $this->findModule($moduleId);
+            $this->requireUnlocked($patient, $module);
 
-        $progress = PatientModule::firstOrCreate(
-            ['patient_id' => $patient->user_id, 'module_id' => $module->id],
-            ['id' => (string) Str::uuid(), 'status' => 'pending'],
-        );
-        $progress->fill(['homework' => $answers, 'homework_submitted_at' => now()])->save();
+            $progress = PatientModule::firstOrCreate(
+                ['patient_id' => $patient->user_id, 'module_id' => $module->id],
+                ['id' => (string) Str::uuid(), 'status' => 'pending'],
+            );
+            $progress->fill(['homework' => $answers, 'homework_submitted_at' => now()])->save();
 
-        return [
-            'module' => $this->moduleToArray($this->moduleAccess->stateFor($patient, $module)),
-        ];
+            return [
+                'module' => $this->moduleToArray($this->moduleAccess->stateFor($patient, $module)),
+            ];
+        });
     }
 
     private function findModule(string $moduleId): Module
@@ -333,7 +336,7 @@ class PatientDashboardService
     {
         $patient = $this->requireProfile($user);
 
-        [$flag, $event] = DB::transaction(function () use ($patient, $user) {
+        [$flag, $event] = ClinicalMutationFence::run($patient->user_id, function () use ($patient, $user) {
             $patient = Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
             $patient->update(['safety_flag' => true]);
             $flag = $this->redFlags->createFromMood(
@@ -350,6 +353,7 @@ class PatientDashboardService
             'escalation' => [
                 'id' => $event->id,
                 'channel' => 'in_app',
+                'channels' => ['in_app', 'whatsapp'],
                 'status' => $event->fresh()?->delivered_at ? 'delivered' : 'pending',
             ],
             'red_flag' => [

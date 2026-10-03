@@ -10,6 +10,7 @@ use App\Models\Patient;
 use App\Models\PatientModule;
 use App\Models\RedFlag;
 use App\Models\Subscription;
+use App\Services\Program\ModuleAccessService;
 use App\Services\RedFlagService;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Log;
@@ -29,7 +30,7 @@ class ComplianceService
 
     private const MODULE_WEIGHT = 0.4;
 
-    public function __construct(private RedFlagService $redFlags) {}
+    public function __construct(private RedFlagService $redFlags, private ModuleAccessService $moduleAccess) {}
 
     /** @return array{score:int, level:ComplianceLevel, mood_days:int, modules_completed:int, modules_due:int} */
     public function snapshot(Patient $patient, CarbonInterface $asOf): array
@@ -46,6 +47,7 @@ class ComplianceService
         $moodScore = min(100, $moodDays / self::WINDOW_DAYS * 100);
 
         $modules = PatientModule::where('patient_id', $patient->user_id)
+            ->whereIn('id', $this->moduleAccess->eligibleProgressIds($patient))
             ->whereNull('hidden_at')
             ->where('created_at', '<', $windowEnd)
             ->where(function ($q) use ($windowStart) {
@@ -79,38 +81,41 @@ class ComplianceService
      */
     public function apply(Patient $patient, CarbonInterface $asOf): ComplianceLevel
     {
-        $snapshot = $this->snapshot($patient, $asOf);
-        $level = $snapshot['level'];
-        $previous = $patient->compliance_level instanceof ComplianceLevel
-            ? $patient->compliance_level
-            : ComplianceLevel::tryFrom((string) $patient->compliance_level);
+        return ClinicalMutationFence::run($patient->user_id, function () use ($patient, $asOf) {
+            $patient = Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
+            $snapshot = $this->snapshot($patient, $asOf);
+            $level = $snapshot['level'];
+            $previous = $patient->compliance_level instanceof ComplianceLevel
+                ? $patient->compliance_level
+                : ComplianceLevel::tryFrom((string) $patient->compliance_level);
 
-        Patient::whereKey($patient->user_id)->update(['compliance_level' => $level->value]);
+            Patient::whereKey($patient->user_id)->update(['compliance_level' => $level->value]);
 
-        if ($level === ComplianceLevel::LOW && ! $this->hasOpenNonComplianceFlag($patient)) {
-            $this->redFlags->createFromMood(
-                $patient,
-                RedFlagType::NON_COMPLIANCE,
-                RedFlagPriority::LOW,
-                sprintf(
-                    'Weekly compliance dropped to LOW (score %d/100: %d/%d mood check-ins, %d/%d modules completed).',
-                    $snapshot['score'],
-                    $snapshot['mood_days'],
-                    self::WINDOW_DAYS,
-                    $snapshot['modules_completed'],
-                    $snapshot['modules_due'],
-                ),
-            );
-        }
+            if ($level === ComplianceLevel::LOW && ! $this->hasOpenNonComplianceFlag($patient)) {
+                $this->redFlags->createFromMood(
+                    $patient,
+                    RedFlagType::NON_COMPLIANCE,
+                    RedFlagPriority::LOW,
+                    sprintf(
+                        'Weekly compliance dropped to LOW (score %d/100: %d/%d mood check-ins, %d/%d modules completed).',
+                        $snapshot['score'],
+                        $snapshot['mood_days'],
+                        self::WINDOW_DAYS,
+                        $snapshot['modules_completed'],
+                        $snapshot['modules_due'],
+                    ),
+                );
+            }
 
-        Log::info('Weekly compliance computed', [
-            'patient_id' => $patient->user_id,
-            'score' => $snapshot['score'],
-            'level' => $level->value,
-            'previous' => $previous?->value,
-        ]);
+            Log::info('Weekly compliance computed', [
+                'patient_id' => $patient->user_id,
+                'score' => $snapshot['score'],
+                'level' => $level->value,
+                'previous' => $previous?->value,
+            ]);
 
-        return $level;
+            return $level;
+        });
     }
 
     private function hasOpenNonComplianceFlag(Patient $patient): bool

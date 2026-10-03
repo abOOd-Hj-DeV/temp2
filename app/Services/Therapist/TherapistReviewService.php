@@ -9,9 +9,9 @@ use App\Models\Review;
 use App\Models\Therapist;
 use App\Models\TherapySession;
 use App\Services\AuditLogService;
+use App\Services\Patient\ClinicalMutationFence;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Pagination\LengthAwarePaginator;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -34,7 +34,7 @@ class TherapistReviewService
         }
 
         try {
-            $review = DB::transaction(function () use ($patient, $therapist, $data) {
+            $review = ClinicalMutationFence::run($patient->user_id, function () use ($patient, $therapist, $data) {
                 $review = Review::create([
                     'id' => (string) Str::uuid(),
                     'patient_id' => $patient->user_id,
@@ -65,7 +65,8 @@ class TherapistReviewService
             ->first()
             ?? throw ValidationException::withMessages(['review' => 'You have not reviewed this therapist yet.']);
 
-        return DB::transaction(function () use ($review, $data) {
+        return ClinicalMutationFence::run($patient->user_id, function () use ($review, $data) {
+            $review = Review::whereKey($review->id)->lockForUpdate()->firstOrFail();
             $payload = [];
             if (isset($data['rating'])) {
                 $payload['rating'] = (int) $data['rating'];

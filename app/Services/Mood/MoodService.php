@@ -6,10 +6,10 @@ use App\Enums\RedFlagPriority;
 use App\Enums\RedFlagType;
 use App\Models\MoodLog;
 use App\Models\Patient;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Services\RedFlagService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**
@@ -25,7 +25,7 @@ class MoodService
 
     public function log(Patient $patient, array $data): array
     {
-        return DB::transaction(function () use ($patient, $data) {
+        return ClinicalMutationFence::run($patient->user_id, function () use ($patient, $data) {
             $patient = Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
 
             return $this->storeLog($patient, $data);

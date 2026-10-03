@@ -5,10 +5,10 @@
 namespace App\Models;
 
 use App\Casts\ClinicalEncrypted;
+use App\Services\Patient\ClinicalMutationFence;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Facades\DB;
 
 class ParallelLayer extends Model
 {
@@ -48,7 +48,7 @@ class ParallelLayer extends Model
      */
     public function addEditLog(string $action, array $details): void
     {
-        DB::transaction(function () use ($action, $details) {
+        ClinicalMutationFence::run($this->patient_id, function () use ($action, $details) {
             $fresh = self::whereKey($this->id)->lockForUpdate()->firstOrFail();
             $log = $fresh->edit_log ?? [];
             $log[] = [

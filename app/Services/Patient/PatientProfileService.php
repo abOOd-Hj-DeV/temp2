@@ -33,21 +33,23 @@ class PatientProfileService
      */
     public function upsertProfile(User $user, array $data): array
     {
-        $fields = array_intersect_key($data, array_flip(self::EDITABLE_FIELDS));
+        return ClinicalMutationFence::run($user->id, function () use ($user, $data) {
+            $fields = array_intersect_key($data, array_flip(self::EDITABLE_FIELDS));
 
-        $patient = $this->patients->findByUserId($user->id);
+            $patient = $this->patients->findByUserId($user->id);
 
-        if ($patient) {
-            $this->patients->update($patient, $fields);
-        } else {
-            $patient = $this->patients->create($fields + ['user_id' => $user->id]);
-        }
+            if ($patient) {
+                $this->patients->update($patient, $fields);
+            } else {
+                $patient = $this->patients->create($fields + ['user_id' => $user->id]);
+            }
 
-        return [
-            'message' => __('Profile saved.'),
-            'patient' => $this->toArray($patient->refresh()),
-            'profile_completion' => $this->completion($patient),
-        ];
+            return [
+                'message' => __('Profile saved.'),
+                'patient' => $this->toArray($patient->refresh()),
+                'profile_completion' => $this->completion($patient),
+            ];
+        });
     }
 
     public function getOnboarding(User $user): array

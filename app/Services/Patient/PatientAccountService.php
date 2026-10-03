@@ -10,6 +10,7 @@ use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
 use App\Repositories\Contracts\UserRepositoryInterface;
 use App\Services\AuditLogService;
+use App\Services\Files\AccountFileFence;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -39,15 +40,18 @@ class PatientAccountService
         $scheduledAt = now()->addDays(self::DELETION_GRACE_DAYS);
 
         DB::transaction(function () use ($user, $scheduledAt) {
-            $this->users->update($user, ['deletion_scheduled_at' => $scheduledAt]);
+            $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            AccountFileFence::lock([$user->id]);
+            if (! $this->users->update($user, ['deletion_scheduled_at' => $scheduledAt])) {
+                throw new \RuntimeException('Account deletion could not be scheduled.');
+            }
 
             // Deactivate every live session token immediately.
             $user->revokeAllTokens();
+            $this->audit->record($user, AuditLogService::ACCOUNT_DELETION_REQUESTED, $user->id, [
+                'scheduled_at' => $scheduledAt->toISOString(),
+            ]);
         });
-
-        $this->audit->record($user, AuditLogService::ACCOUNT_DELETION_REQUESTED, $user->id, [
-            'scheduled_at' => $scheduledAt->toISOString(),
-        ]);
         Log::info('Account deletion scheduled', ['user_id' => $user->id]);
 
         return [
@@ -229,6 +233,12 @@ class PatientAccountService
                     'id', 'sender_id', 'receiver_id', 'content', 'file_path', 'attachment_type', 'attachment_name', 'attachment_mime', 'attachment_size', 'timestamp', 'is_read', 'read_at',
                 ]))->all(),
             ])->all(),
+            'legacy_messages' => Models\Message::whereNull('conversation_id')->where(function ($q) use ($id) {
+                $q->where('sender_id', $id)->orWhere('receiver_id', $id);
+            })->get()->map(fn ($message) => $message->only([
+                'id', 'sender_id', 'receiver_id', 'content', 'file_path', 'attachment_type', 'attachment_name',
+                'attachment_mime', 'attachment_size', 'timestamp', 'is_read', 'read_at',
+            ]))->all(),
             'files' => $files,
         ];
     }

@@ -130,7 +130,9 @@ class AccountAnonymizer
         $this->redactModels(Models\Payment::where($this->paymentsOwnedBy($userId)), ['note'], $identifiers);
         $this->redactModels(Models\Subscription::where('patient_id', $userId), ['content', 'cancellation_reason'], $identifiers);
         $this->redactModels(Models\DocumentRequest::where('user_id', $userId), ['reason', 'review_note', 'original_name'], $identifiers);
-        $this->redactModels(Models\TherapistContent::where('patient_id', $userId), ['title', 'body', 'url'], $identifiers);
+        $this->redactModels(Models\TherapistContent::where(function ($q) use ($userId) {
+            $q->where('patient_id', $userId)->orWhereHas('assignedPatients', fn ($p) => $p->where('patients.user_id', $userId));
+        }), ['title', 'body', 'url'], $identifiers);
         Models\ParallelLayer::where('patient_id', $userId)->eachById(function ($layer) {
             $layer->update(['content' => ['redacted' => true], 'edit_log' => array_map(function ($entry) {
                 $entry['details'] = [];
@@ -139,6 +141,9 @@ class AccountAnonymizer
             }, $layer->edit_log ?? [])]);
         });
         DB::table('therapist_content_assignments')->where('patient_id', $userId)->delete();
+        Models\TherapistContent::where('patient_id', $userId)->lockForUpdate()->eachById(function ($item) {
+            $item->update(['patient_id' => $item->assignedPatients()->value('patients.user_id')]);
+        });
         Models\MoodLog::where('patient_id', $userId)->update(['notes' => null]);
         Models\PatientModule::where('patient_id', $userId)->update(['homework' => null, 'homework_submitted_at' => null]);
         Models\SafetyPlan::where('patient_id', $userId)->delete();
@@ -153,7 +158,7 @@ class AccountAnonymizer
 
     private function redactModels($query, array $columns, array $identifiers): void
     {
-        $query->eachById(function ($row) use ($columns, $identifiers) {
+        $query->lockForUpdate()->eachById(function ($row) use ($columns, $identifiers) {
             foreach ($columns as $column) {
                 $row->{$column} = $this->redactValue($row->{$column}, $identifiers);
             }

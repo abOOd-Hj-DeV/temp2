@@ -342,7 +342,10 @@ class SessionBookingTest extends TestCase
         $this->postJson("/api/v1/sessions/{$id}/complete", ['summary' => 'went well'])
             ->assertOk()->assertJsonPath('session.status', 'completed');
 
-        $this->assertDatabaseHas('therapy_sessions', ['id' => $id, 'summary' => 'went well']);
+        $saved = TherapySession::findOrFail($id);
+        $this->assertSame('went well', $saved->summary);
+        $this->assertStringStartsWith('clinical:v1:', $saved->getRawOriginal('summary'));
+        $this->assertStringNotContainsString('went well', $saved->getRawOriginal('summary'));
         $this->assertDatabaseHas('session_status_logs', [
             'session_id' => $id, 'from_status' => 'confirmed', 'to_status' => 'completed',
         ]);

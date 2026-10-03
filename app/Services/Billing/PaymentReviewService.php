@@ -68,7 +68,7 @@ class PaymentReviewService
         $disk = config('sakina.uploads_disk', 'local');
         try {
             return DB::transaction(function () use ($session, $proof, $disk) {
-                AccountFileFence::lock([$session->patient_id]);
+                AccountFileFence::lock([$session->patient_id, $session->therapist_id]);
                 $path = self::storeProof($proof, "payment-proofs/{$session->patient_id}", $disk);
                 RollbackFileCleanup::register($disk, $path);
                 $locked = BookingLocks::session($session->id);

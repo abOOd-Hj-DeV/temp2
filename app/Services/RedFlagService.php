@@ -14,7 +14,7 @@ use App\Models\RedFlag;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\RedFlagRepositoryInterface;
-use Illuminate\Support\Facades\DB;
+use App\Services\Patient\ClinicalMutationFence;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -74,7 +74,7 @@ class RedFlagService
         RedFlagPriority $priority,
         string $description,
     ): RedFlag {
-        $flag = DB::transaction(function () use ($patientId, $assessmentId, $type, $priority, $description): RedFlag {
+        $flag = ClinicalMutationFence::run($patientId, function () use ($patientId, $assessmentId, $type, $priority, $description): RedFlag {
             Patient::where('user_id', $patientId)->lockForUpdate()->first();
             $existing = $this->openFlag($patientId, $type);
 
@@ -190,11 +190,12 @@ class RedFlagService
 
     public function updateStatus(string $redFlagId, string $status, ?string $actionTaken = null): bool
     {
-        return DB::transaction(function () use ($redFlagId, $status, $actionTaken) {
-            $flag = RedFlag::find($redFlagId);
-            if (! $flag) {
-                return false;
-            }
+        $flag = RedFlag::find($redFlagId);
+        if (! $flag) {
+            return false;
+        }
+
+        return ClinicalMutationFence::run($flag->patient_id, function () use ($flag, $redFlagId, $status, $actionTaken) {
             Patient::whereKey($flag->patient_id)->lockForUpdate()->firstOrFail();
             $flag = RedFlag::whereKey($redFlagId)->lockForUpdate()->firstOrFail();
             if ($status === 'open' && RedFlag::where('patient_id', $flag->patient_id)
@@ -209,7 +210,10 @@ class RedFlagService
 
     public function assignTo(string $redFlagId, string $userId): bool
     {
-        return $this->redFlags->assignTo($redFlagId, $userId);
+        $flag = RedFlag::find($redFlagId);
+
+        return $flag ? ClinicalMutationFence::run($flag->patient_id,
+            fn () => $this->redFlags->assignTo($redFlagId, $userId)) : false;
     }
 
     /**

@@ -11,8 +11,8 @@ use App\Models\TherapySession;
 use App\Models\User;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
+use App\Services\Patient\ClinicalMutationFence;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -58,7 +58,7 @@ class SessionRecommendationService
             throw ValidationException::withMessages(['program_id' => 'The selected program does not exist.']);
         }
 
-        $recommendation = DB::transaction(function () use ($session, $therapist, $packageId, $programId, $note) {
+        $recommendation = ClinicalMutationFence::run($session->patient_id, function () use ($session, $therapist, $packageId, $programId, $note) {
             $existing = SessionRecommendation::where('session_id', $session->id)->lockForUpdate()->first();
 
             if ($existing === null) {

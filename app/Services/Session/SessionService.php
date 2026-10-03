@@ -8,6 +8,7 @@ use App\Enums\SessionStatus;
 use App\Enums\UserRole;
 use App\Exceptions\ConflictException;
 use App\Models\Patient;
+use App\Models\SessionReportRevision;
 use App\Models\Subscription;
 use App\Models\Therapist;
 use App\Models\TherapySession;
@@ -16,13 +17,13 @@ use App\Repositories\Contracts\SessionRepositoryInterface;
 use App\Repositories\Contracts\SubscriptionRepositoryInterface;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Services\Therapist\TherapistService;
 use App\Support\SessionClock;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class SessionService
@@ -54,7 +55,7 @@ class SessionService
         [$date, $time] = $this->requestedSlot($data['session_date'], $data['session_time'], $patient->user);
 
         try {
-            $session = DB::transaction(function () use ($patient, $therapist, $data, $date, $time) {
+            $session = ClinicalMutationFence::run([$patient->user_id, $therapist->user_id], function () use ($patient, $therapist, $data, $date, $time) {
                 $lockedPatient = BookingLocks::patient($patient->user_id);
                 BookingLocks::subscriptions($lockedPatient);
                 $therapist = BookingLocks::therapists([$therapist->user_id])->firstOrFail();
@@ -188,7 +189,7 @@ class SessionService
      */
     public function requestCancellation(TherapySession $session, User $actor): TherapySession
     {
-        $fresh = DB::transaction(function () use ($session, $actor) {
+        $fresh = ClinicalMutationFence::run([$session->patient_id, $session->therapist_id], function () use ($session, $actor) {
             $locked = BookingLocks::session($session->id);
             if ($actor->id !== $locked->patient_id) {
                 throw new AuthorizationException('Only the patient of this session can request a cancellation.');
@@ -224,7 +225,7 @@ class SessionService
      */
     public function decideCancellation(TherapySession $session, User $actor, bool $approve): TherapySession
     {
-        $fresh = DB::transaction(function () use ($session, $actor, $approve) {
+        $fresh = ClinicalMutationFence::run([$session->patient_id, $session->therapist_id], function () use ($session, $actor, $approve) {
             $locked = BookingLocks::session($session->id);
             $this->assertOwner($locked, $actor);
 
@@ -279,7 +280,7 @@ class SessionService
     {
         $isStaff = in_array($actor->role, [UserRole::ADMIN, UserRole::SUPER_ADMIN, UserRole::CLINICAL_SUPERVISOR], true);
 
-        return DB::transaction(function () use ($session, $actor, $isStaff) {
+        return ClinicalMutationFence::run([$session->patient_id, $session->therapist_id], function () use ($session, $actor, $isStaff) {
             $locked = BookingLocks::session($session->id);
             if (! $isStaff && $actor->id !== $locked->patient_id) {
                 throw new AuthorizationException('Only the patient of this session can confirm attendance.');
@@ -312,7 +313,7 @@ class SessionService
      */
     public function report(TherapySession $session, User $actor, string $summary): TherapySession
     {
-        return DB::transaction(function () use ($session, $actor, $summary) {
+        return ClinicalMutationFence::run([$session->patient_id, $session->therapist_id], function () use ($session, $actor, $summary) {
             $locked = BookingLocks::session($session->id);
             $this->assertOwner($locked, $actor);
             if ($locked->status === SessionStatus::CONFIRMED) {
@@ -326,7 +327,7 @@ class SessionService
             $previousHash = $previous === null ? null : hash('sha256', $previous);
             $patientAnonymized = User::whereKey($locked->patient_id)->whereNotNull('anonymized_at')->exists();
 
-            DB::table('booking_report_revisions')->insert([
+            SessionReportRevision::create([
                 'session_id' => $locked->id, 'revision' => $revision, 'actor_id' => $actor->id,
                 'previous_summary' => $patientAnonymized ? null : $previous, 'new_summary' => $patientAnonymized ? null : $summary,
                 'previous_sha256' => $previousHash, 'new_sha256' => hash('sha256', $summary),
@@ -353,7 +354,7 @@ class SessionService
     {
         [$date, $time] = $this->requestedSlot($date, $time, $actor);
 
-        $fresh = DB::transaction(function () use ($session, $actor, $date, $time) {
+        $fresh = ClinicalMutationFence::run([$session->patient_id, $session->therapist_id], function () use ($session, $actor, $date, $time) {
             $locked = BookingLocks::session($session->id);
             if ($actor->id !== $locked->patient_id) {
                 throw new AuthorizationException('Only the patient of this session can request a reschedule.');
@@ -396,7 +397,7 @@ class SessionService
     public function decideReschedule(TherapySession $session, User $actor, bool $approve): TherapySession
     {
         try {
-            $fresh = DB::transaction(function () use ($session, $actor, $approve) {
+            $fresh = ClinicalMutationFence::run([$session->patient_id, $session->therapist_id], function () use ($session, $actor, $approve) {
                 $locked = BookingLocks::session($session->id);
                 $this->assertOwner($locked, $actor);
 
@@ -462,7 +463,7 @@ class SessionService
      */
     public function setLink(TherapySession $session, User $actor, string $link): TherapySession
     {
-        return DB::transaction(function () use ($session, $actor, $link) {
+        return ClinicalMutationFence::run([$session->patient_id, $session->therapist_id], function () use ($session, $actor, $link) {
             $locked = BookingLocks::session($session->id);
             $this->assertOwner($locked, $actor);
 
@@ -539,7 +540,7 @@ class SessionService
      */
     private function transition(TherapySession $session, SessionStatus $to, User $actor, array $allowedFrom, array $extra = [], bool $fromPayment = false): TherapySession
     {
-        [$fresh, $from] = DB::transaction(function () use ($session, $to, $actor, $allowedFrom, $extra, $fromPayment) {
+        [$fresh, $from] = ClinicalMutationFence::run([$session->patient_id, $session->therapist_id], function () use ($session, $to, $actor, $allowedFrom, $extra, $fromPayment) {
             $locked = BookingLocks::session($session->id);
 
             if (! $fromPayment && ($to !== SessionStatus::CANCELLED || $actor->role === UserRole::THERAPIST)) {

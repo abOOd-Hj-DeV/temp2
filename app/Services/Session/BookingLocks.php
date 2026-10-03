@@ -7,10 +7,11 @@ use App\Models\Patient;
 use App\Models\Subscription;
 use App\Models\Therapist;
 use App\Models\TherapySession;
+use App\Services\Files\AccountFileFence;
 use Illuminate\Database\Eloquent\Collection;
 
 /**
- * Transaction lock order: patient -> subscriptions (id) -> therapists (user_id)
+ * Transaction lock order: owner users (id) -> patient -> subscriptions (id) -> therapists (user_id)
  * -> switch -> sessions (id) -> payments. Never acquire an earlier lock later.
  * The patient lock serializes package/assignment/schedule changes; therapist
  * locks serialize capacity and slots across patients. Call inside a transaction.
@@ -19,6 +20,8 @@ final class BookingLocks
 {
     public static function patient(string $id): Patient
     {
+        AccountFileFence::lock([$id]);
+
         return Patient::whereKey($id)->lockForUpdate()->firstOrFail();
     }
 
@@ -35,6 +38,7 @@ final class BookingLocks
     public static function session(string $id): TherapySession
     {
         $snapshot = TherapySession::findOrFail($id);
+        AccountFileFence::lock([$snapshot->patient_id, $snapshot->therapist_id]);
         $patient = self::patient($snapshot->patient_id);
         self::subscriptions($patient);
         self::therapists([$snapshot->therapist_id]);

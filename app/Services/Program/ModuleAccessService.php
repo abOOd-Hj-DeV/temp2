@@ -64,6 +64,17 @@ class ModuleAccessService
         return $this->subscriptions->activeForPatient($patient->user_id) !== null;
     }
 
+    /** Progress rows currently eligible under the same gates used by the patient API. */
+    public function eligibleProgressIds(Patient $patient): BaseCollection
+    {
+        $programIds = Module::whereIn('id', PatientModule::where('patient_id', $patient->user_id)->select('module_id'))
+            ->distinct()->pluck('program_id');
+
+        return $programIds->flatMap(fn ($id) => $this->programState($patient, $id))
+            ->filter(fn ($state) => ! $state['locked'] && $state['progress'] !== null)
+            ->map(fn ($state) => $state['progress']->id);
+    }
+
     /**
      * @param  Collection<int, Module>  $modules
      * @return BaseCollection<int, array{module: Module, progress: ?PatientModule, locked: bool, lock_reason: ?string, is_free: bool}>

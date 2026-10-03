@@ -15,6 +15,7 @@ use App\Services\Billing\PaymentReviewService;
 use App\Services\Files\AccountFileFence;
 use App\Services\Files\RollbackFileCleanup;
 use App\Services\Package\PackageService;
+use App\Services\Patient\ClinicalMutationFence;
 use App\Services\Session\BookingLocks;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -105,7 +106,7 @@ class SubscriptionService
      */
     public function cancel(Subscription $subscription, User $actor, ?string $reason = null): array
     {
-        return DB::transaction(function () use ($subscription, $actor, $reason) {
+        return ClinicalMutationFence::run($subscription->patient_id, function () use ($subscription, $actor, $reason) {
             $snapshot = Subscription::findOrFail($subscription->id);
             $patient = BookingLocks::patient($snapshot->patient_id);
             $locked = BookingLocks::subscriptions($patient)->firstWhere('id', $subscription->id);
