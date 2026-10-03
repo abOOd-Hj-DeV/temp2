@@ -3,8 +3,9 @@
 namespace App\Jobs;
 
 use App\Models\NotificationLog;
+use App\Models\TherapySession;
 use App\Services\Messaging\WhatsAppSenderInterface;
-use App\Support\DurableQueue;
+use App\Support\SessionClock;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -34,6 +35,15 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
     public function handle(WhatsAppSenderInterface $whatsApp): void
     {
+        if (isset($this->context['schedule_key'], $this->context['session_id'])) {
+            $session = TherapySession::find($this->context['session_id']);
+            if ($session === null || $session->status->value !== 'confirmed' || ! hash_equals($this->context['schedule_key'], hash('sha256', SessionClock::fromStored($session->session_date, (string) $session->session_time)->startOfMinute()->toIso8601String()))) {
+                $this->log()?->update(['status' => NotificationLog::STATUS_SKIPPED, 'error' => 'Appointment no longer current.']);
+
+                return;
+            }
+        }
+
         try {
             $sent = $whatsApp->send($this->phoneNumber, $this->message);
         } catch (\Throwable $e) {
@@ -48,22 +58,9 @@ class SendWhatsAppMessageJob implements ShouldQueue
             return;
         }
 
-        $fallback = $this->job?->getConnectionName() === 'sync' ? DurableQueue::fallbackConnection() : null;
+        $this->log()?->markFailed('WhatsApp provider rejected the message.');
 
-        if ($fallback === null) {
-            $this->log()?->markFailed('WhatsApp provider rejected the message.');
-
-            throw new \RuntimeException('WhatsApp provider rejected the message.');
-        }
-
-        // Running inline: hand the retries to a worker instead of failing the request.
-        static::dispatch($this->phoneNumber, $this->message, $this->context)
-            ->onConnection($fallback)
-            ->delay(now()->addSeconds($this->backoff[0]));
-
-        $this->log()?->markFailed('WhatsApp provider rejected the message; deferred to the durable queue.');
-
-        Log::warning('WhatsApp message deferred to the durable queue', $this->context + ['connection' => $fallback]);
+        throw new \RuntimeException('WhatsApp provider rejected the message.');
     }
 
     public function failed(\Throwable $e): void
@@ -72,7 +69,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
         Log::critical('WhatsApp message permanently failed', $this->context + [
             'attempts' => $this->tries,
-            'error' => $e->getMessage(),
+            'reason' => 'provider_failure',
         ]);
     }
 

@@ -2,8 +2,11 @@
 
 namespace App\Providers;
 
+use App\Services\Notifications\OperationsHealth;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Sanctum\PersonalAccessToken;
@@ -19,6 +22,14 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureRateLimiting();
+
+        Queue::looping(function (): void {
+            try {
+                app(OperationsHealth::class)->heartbeat('worker');
+            } catch (\Throwable) {
+                Log::warning('Worker heartbeat unavailable');
+            }
+        });
 
         // An anonymised account is gone for good: any token that survived a
         // race with revokeAllTokens() is rejected at the guard, on every route.

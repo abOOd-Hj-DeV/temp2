@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Enums\UserRole;
 use App\Models\Payment;
 use App\Models\User;
+use App\Services\Notifications\OutboxPendingDispatch;
 use App\Services\NotificationService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -21,6 +22,11 @@ class ReviewPaymentProofJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public function __construct(private string $paymentId) {}
+
+    public static function dispatch(...$arguments): OutboxPendingDispatch
+    {
+        return new OutboxPendingDispatch(new static(...$arguments), 'payment.proof_review:'.$arguments[0]);
+    }
 
     public function handle(NotificationService $notifications): void
     {

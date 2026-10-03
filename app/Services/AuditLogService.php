@@ -8,8 +8,8 @@ use Illuminate\Support\Str;
 
 /**
  * Append-only trail of sensitive actions (payment decisions, approvals,
- * status transitions, account lifecycle). Never throws: an audit failure
- * must not roll back the business operation it describes.
+ * status transitions, account lifecycle). Callers must include required
+ * audit inserts in the business transaction; failures propagate and roll it back.
  */
 class AuditLogService
 {
@@ -157,17 +157,13 @@ class AuditLogService
 
     public function record(User|string $actor, string $action, ?string $entityId = null, array $details = []): void
     {
-        try {
-            AuditLog::create([
-                'id' => (string) Str::uuid(),
-                'user_id' => $actor instanceof User ? $actor->id : $actor,
-                'action' => $action,
-                'entity_id' => $entityId,
-                'details' => $details ?: null,
-                'timestamp' => now(),
-            ]);
-        } catch (\Throwable $e) {
-            report($e);
-        }
+        AuditLog::create([
+            'id' => (string) Str::uuid(),
+            'user_id' => $actor instanceof User ? $actor->id : $actor,
+            'action' => $action,
+            'entity_id' => $entityId,
+            'details' => $details ?: null,
+            'timestamp' => now(),
+        ]);
     }
 }

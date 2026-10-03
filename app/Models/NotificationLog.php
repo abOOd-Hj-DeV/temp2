@@ -62,7 +62,7 @@ class NotificationLog extends Model
         $this->forceFill([
             'status' => self::STATUS_QUEUED,
             'attempts' => $this->attempts + 1,
-            'error' => mb_substr($error, 0, 500),
+            'error' => 'Delivery rejected or unavailable; retry pending.',
         ])->save();
     }
 
@@ -70,7 +70,7 @@ class NotificationLog extends Model
     {
         $this->forceFill([
             'status' => self::STATUS_FAILED,
-            'error' => mb_substr($error, 0, 500),
+            'error' => 'Delivery failed; operator review required.',
         ])->save();
     }
 }
