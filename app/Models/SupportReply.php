@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use App\Traits\HasUUID;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -12,7 +13,7 @@ class SupportReply extends Model
 
     protected $fillable = ['support_id', 'user_id', 'is_staff', 'body'];
 
-    protected $casts = ['is_staff' => 'boolean'];
+    protected $casts = ['is_staff' => 'boolean', 'body' => ClinicalEncrypted::class];
 
     public function ticket(): BelongsTo
     {

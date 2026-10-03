@@ -4,6 +4,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use App\Enums\RedFlagPriority;
 use App\Enums\RedFlagType;
 use App\Traits\HasUUID;
@@ -29,6 +30,8 @@ class RedFlag extends Model
     public bool $priorityRaised = false;
 
     protected $casts = [
+        'description' => ClinicalEncrypted::class,
+        'action_taken' => ClinicalEncrypted::class,
         'type' => RedFlagType::class,
         'priority' => RedFlagPriority::class,
         'escalated_at' => 'datetime',

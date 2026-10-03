@@ -4,9 +4,11 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\DB;
 
 class ParallelLayer extends Model
 {
@@ -21,8 +23,8 @@ class ParallelLayer extends Model
     ];
 
     protected $casts = [
-        'content' => 'array',
-        'edit_log' => 'array',
+        'content' => ClinicalEncrypted::class.':array',
+        'edit_log' => ClinicalEncrypted::class.':array',
     ];
 
     /**
@@ -46,14 +48,18 @@ class ParallelLayer extends Model
      */
     public function addEditLog(string $action, array $details): void
     {
-        $log = $this->edit_log ?? [];
-        $log[] = [
-            'action' => $action,
-            'details' => $details,
-            'timestamp' => now()->toISOString(),
-            'therapist_id' => $this->therapist_id,
-        ];
+        DB::transaction(function () use ($action, $details) {
+            $fresh = self::whereKey($this->id)->lockForUpdate()->firstOrFail();
+            $log = $fresh->edit_log ?? [];
+            $log[] = [
+                'action' => $action,
+                'details' => $details,
+                'timestamp' => now()->toISOString(),
+                'therapist_id' => $this->therapist_id,
+            ];
 
-        $this->update(['edit_log' => $log]);
+            $fresh->update(['edit_log' => $log]);
+            $this->setRawAttributes($fresh->getAttributes(), true);
+        });
     }
 }

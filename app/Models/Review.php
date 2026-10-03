@@ -4,6 +4,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -21,6 +22,7 @@ class Review extends Model
     ];
 
     protected $casts = [
+        'comment' => ClinicalEncrypted::class,
         'rating' => 'integer',
     ];
 

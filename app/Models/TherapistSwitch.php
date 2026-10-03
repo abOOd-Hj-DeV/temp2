@@ -4,6 +4,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -24,6 +25,7 @@ class TherapistSwitch extends Model
     ];
 
     protected $casts = [
+        'reason' => ClinicalEncrypted::class,
         'cancelled_session_ids' => 'array',
         'timestamp' => 'datetime',
         'therapist_decided_at' => 'datetime',

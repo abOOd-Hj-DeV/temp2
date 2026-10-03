@@ -4,6 +4,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -23,7 +24,7 @@ class PatientModule extends Model
 
     protected $casts = [
         'completed_at' => 'datetime',
-        'homework' => 'array',
+        'homework' => ClinicalEncrypted::class.':array',
         'homework_submitted_at' => 'datetime',
         'hidden_at' => 'datetime',
     ];

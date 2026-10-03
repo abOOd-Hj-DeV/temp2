@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -15,6 +16,8 @@ class TherapistClientNote extends Model
     use HasUuids;
 
     protected $fillable = ['therapist_id', 'patient_id', 'session_id', 'body'];
+
+    protected $casts = ['body' => ClinicalEncrypted::class];
 
     public function therapist(): BelongsTo
     {

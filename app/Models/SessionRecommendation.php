@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use App\Traits\HasUUID;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -15,6 +16,7 @@ class SessionRecommendation extends Model
     ];
 
     protected $casts = [
+        'note' => ClinicalEncrypted::class,
         'revision' => 'integer',
     ];
 

@@ -15,8 +15,10 @@ use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\AssessmentRepositoryInterface;
 use App\Repositories\Contracts\PatientRepositoryInterface;
+use App\Services\AuditLogService;
 use App\Services\Program\ModuleAccessService;
 use App\Services\RedFlagService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
@@ -325,20 +327,31 @@ class PatientDashboardService
 
     /**
      * The emergency screen's "talk to a clinical supervisor now" action:
-     * raises (or bumps) a HIGH safety flag so staff are paged immediately.
+     * Persist a HIGH safety flag and a distinct, retryable staff in-app event.
      */
     public function emergencyAlert(User $user): array
     {
         $patient = $this->requireProfile($user);
 
-        $flag = $this->redFlags->createFromMood(
-            $patient,
-            RedFlagType::SAFETY,
-            RedFlagPriority::HIGH,
-            'Patient requested immediate contact with a clinical supervisor from the emergency screen.',
-        );
+        [$flag, $event] = DB::transaction(function () use ($patient, $user) {
+            $patient = Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
+            $patient->update(['safety_flag' => true]);
+            $flag = $this->redFlags->createFromMood(
+                $patient, RedFlagType::SAFETY, RedFlagPriority::HIGH,
+                'Patient requested immediate contact with a clinical supervisor from the emergency screen.',
+            );
+            $event = app(ClinicalEventDelivery::class)->record($patient->user_id, 'emergency_contact_requested', $flag->id);
+            app(AuditLogService::class)->record($user, 'patient.emergency_contact_requested', $flag->id, ['event_id' => $event->id]);
+
+            return [$flag, $event];
+        });
 
         return [
+            'escalation' => [
+                'id' => $event->id,
+                'channel' => 'in_app',
+                'status' => $event->fresh()?->delivered_at ? 'delivered' : 'pending',
+            ],
             'red_flag' => [
                 'id' => $flag->id,
                 'priority' => $flag->priority?->value ?? $flag->priority,

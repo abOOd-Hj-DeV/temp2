@@ -2,8 +2,7 @@
 
 namespace App\Services\Patient;
 
-use App\Models\Conversation;
-use App\Models\IdempotencyKey;
+use App\Models;
 use App\Models\User;
 use App\Services\AuditLogService;
 use Illuminate\Support\Facades\DB;
@@ -12,140 +11,172 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
- * GDPR-style erasure that keeps the clinical and financial record intact:
- * personal identifiers on users/patients are scrubbed and the account is
- * permanently disabled, while sessions, payments, assessments and red
- * flags remain linked to the (now anonymous) id for audit purposes.
- *
- * Free text written about the patient (session summaries, payment notes,
- * switch reasons, therapist notes, red-flag text) is kept for clinical
- * continuity but redacted of direct identifiers: the person's name, e-mail
- * addresses and phone numbers. Free text written by the patient (mood notes)
- * is cleared outright; the scores stay.
- *
- * Files the person uploaded (payment proofs, licence documents) are removed
- * from the uploads disk. A storage failure rolls back the database changes;
- * retries skip files that have already been removed.
- *
- * Chat threads the person took part in are removed entirely (messages and
- * attachments): the encrypted bodies cannot be redacted and are private
- * correspondence rather than clinical record.
+ * Disable and scrub first, commit a resumable file purge plan, then erase files.
+ * Clinical/financial rows and append-only audit remain pseudonymous records;
+ * this is not a claim of irreversible legal anonymization of those records.
  */
 class AccountAnonymizer
 {
     public const REDACTED = '[redacted]';
 
-    /** table => [owner column, free-text columns] */
-    private const FREE_TEXT = [
-        'therapy_sessions' => ['patient_id', ['summary']],
-        'therapist_switches' => ['patient_id', ['reason']],
-        'therapist_client_notes' => ['patient_id', ['body']],
-        'red_flags' => ['patient_id', ['description', 'action_taken']],
-    ];
-
     public function __construct(private AuditLogService $audit) {}
 
     public function anonymize(User $user): void
     {
+        if (DB::transactionLevel() !== 0) {
+            throw new \LogicException('Erasure must run outside an enclosing transaction so irreversible file deletion cannot roll back account disabling.');
+        }
+        $plan = DB::transaction(function () use ($user) {
+            $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+            if ($user->anonymized_at !== null) {
+                return null;
+            }
+            $existing = DB::table('clinical_erasure_plans')->where('user_id', $user->id)->first();
+            if ($existing) {
+                return $existing;
+            }
+            $identifiers = array_filter([$user->name, $user->email, $user->whatsapp_number, $user->patient?->full_name]);
+            $conversations = Models\Conversation::where('patient_id', $user->id)->orWhere('therapist_id', $user->id)->get();
+            $messageQuery = Models\Message::where(function ($q) use ($user, $conversations) {
+                $q->whereIn('conversation_id', $conversations->pluck('id'))->orWhere('sender_id', $user->id)->orWhere('receiver_id', $user->id);
+            });
+            $paths = DB::table('payments')->where($this->paymentsOwnedBy($user->id))->pluck('proof_file_path')
+                ->merge(DB::table('subscriptions')->where('patient_id', $user->id)->pluck('payment_proof_path'))
+                ->merge(DB::table('supports')->where('user_id', $user->id)->pluck('file_path'))
+                ->merge(DB::table('document_requests')->where('user_id', $user->id)->pluck('file_path'))
+                ->merge((clone $messageQuery)->pluck('file_path'))
+                ->push($user->therapist?->license_file_path)->filter()->unique()->values()->all();
+            $directories = ["uploads/{$user->id}", "payment-proofs/{$user->id}", "licenses/{$user->id}"];
+            foreach ($conversations as $conversation) {
+                $directories[] = "chat/{$conversation->id}";
+            }
+            DB::table('clinical_erasure_plans')->insert([
+                'user_id' => $user->id, 'paths' => json_encode($paths), 'directories' => json_encode($directories),
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $user->revokeAllTokens();
+            $user->forceFill([
+                'name' => 'Deleted user', 'email' => "deleted_{$user->id}@anonymized.invalid",
+                'whatsapp_number' => '+000'.substr(preg_replace('/\D/', '', $user->id), 0, 12),
+                'password' => Hash::make(Str::random(40)), 'is_active' => false,
+                // The existing scheduled job picks up unfinished purges again.
+                'deletion_scheduled_at' => now(),
+            ])->save();
+            $user->patient?->forceFill(['full_name' => 'Anonymous patient', 'therapist_id' => null])->save();
+            $user->notifications()->delete();
+            Models\IdempotencyKey::where('user_id', $user->id)->delete();
+            DB::table('notification_logs')->where('user_id', $user->id)->delete();
+            Models\ClinicalNotificationEvent::where('patient_id', $user->id)->delete();
+            $this->scrubRecords($user->id, $identifiers);
+            $messageQuery->delete();
+            foreach ($conversations as $conversation) {
+                $conversation->delete();
+            }
+
+            return DB::table('clinical_erasure_plans')->where('user_id', $user->id)->first();
+        });
+        if ($plan === null) {
+            return;
+        }
+        $disk = Storage::disk(config('sakina.uploads_disk', 'local'));
+        foreach (json_decode($plan->paths, true, 512, JSON_THROW_ON_ERROR) as $path) {
+            $this->assertSafePath($path);
+            if ($disk->exists($path) && (! $disk->delete($path) || $disk->exists($path))) {
+                throw new \RuntimeException('Owned file could not be erased; account remains disabled and purge is retryable.');
+            }
+        }
+        foreach (json_decode($plan->directories, true, 512, JSON_THROW_ON_ERROR) as $directory) {
+            $this->assertSafePath($directory);
+            if (($disk->exists($directory) || $disk->allFiles($directory) !== [])
+                && (! $disk->deleteDirectory($directory) || $disk->allFiles($directory) !== [])) {
+                throw new \RuntimeException('Owned directory could not be erased; account remains disabled and purge is retryable.');
+            }
+        }
         DB::transaction(function () use ($user) {
             $user = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
-
             if ($user->anonymized_at !== null) {
                 return;
             }
-
-            $identifiers = array_filter([
-                $user->name,
-                $user->email,
-                $user->whatsapp_number,
-                $user->patient?->full_name,
+            DB::table('supports')->where('user_id', $user->id)->update(['file_path' => null]);
+            DB::table('document_requests')->where('user_id', $user->id)->update(['file_path' => null, 'original_name' => null, 'mime_type' => null]);
+            if ($user->therapist) {
+                $user->therapist->forceFill(['license_file_path' => null])->save();
+            }
+            $user->forceFill(['anonymized_at' => now(), 'deletion_scheduled_at' => null, 'is_active' => false])->save();
+            DB::table('clinical_erasure_plans')->where('user_id', $user->id)->update([
+                'completed_at' => now(), 'updated_at' => now(), 'paths' => '[]', 'directories' => '[]',
             ]);
-
-            $user->revokeAllTokens();
-
-            $user->forceFill([
-                'name' => 'Deleted user',
-                'email' => "deleted_{$user->id}@anonymized.invalid",
-                'whatsapp_number' => '+000'.substr(preg_replace('/\D/', '', $user->id), 0, 12),
-                'password' => Hash::make(Str::random(40)),
-                'is_active' => false,
-                'deletion_scheduled_at' => null,
-                'anonymized_at' => now(),
-            ])->save();
-
-            $user->patient?->forceFill([
-                'full_name' => 'Anonymous patient',
-                'therapist_id' => null,
-            ])->save();
-
-            $user->notifications()->delete();
-            IdempotencyKey::where('user_id', $user->id)->delete();
-
-            $this->redactFreeText($user->id, $identifiers);
-            DB::table('mood_logs')->where('patient_id', $user->id)->whereNotNull('notes')->update(['notes' => null]);
-            $this->purgeOwnedFiles($user);
-            $this->purgeConversations($user);
-
             $this->audit->record($user, AuditLogService::ACCOUNT_ANONYMIZED, $user->id);
         });
     }
 
-    /**
-     * Delete every upload owned by the person from the uploads disk. Payment
-     * rows keep their (non-identifying, generated) path so the financial
-     * record survives; the licence path is cleared. A file that still exists
-     * after delete() aborts the transaction so nothing is marked anonymized
-     * while an identifying file remains.
-     */
-    private function purgeOwnedFiles(User $user): void
+    private function scrubRecords(string $userId, array $identifiers): void
     {
-        $disk = Storage::disk(config('sakina.uploads_disk', 'local'));
-
-        $paths = DB::table('payments')
-            ->where($this->paymentsOwnedBy($user->id))
-            ->pluck('proof_file_path')
-            ->push($user->therapist?->license_file_path)
-            ->map(fn ($path) => trim((string) $path))
-            ->filter(fn (string $path) => $path !== '')
-            ->unique();
-
-        foreach ($paths as $path) {
-            if (str_contains($path, '..')) {
-                throw new \RuntimeException('Owned upload has an unsafe path; anonymization aborted.');
-            }
-
-            if (! $disk->exists($path)) {
-                continue;
-            }
-
-            if (! $disk->delete($path) || $disk->exists($path)) {
-                throw new \RuntimeException("Owned upload [{$path}] could not be deleted; anonymization aborted.");
-            }
+        // Model writes honor clinical encryption; no plaintext is written by a raw update.
+        foreach ([
+            Models\TherapistClientNote::class => ['body'], Models\RedFlag::class => ['description', 'action_taken'],
+            Models\TherapistSwitch::class => ['reason'], Models\SessionRecommendation::class => ['note'],
+        ] as $model => $columns) {
+            $this->redactModels($model::where('patient_id', $userId), $columns, $identifiers);
         }
+        $this->redactModels(Models\TherapySession::where('patient_id', $userId), ['summary'], $identifiers);
+        $this->redactModels(Models\Payment::where($this->paymentsOwnedBy($userId)), ['note'], $identifiers);
+        $this->redactModels(Models\Subscription::where('patient_id', $userId), ['content', 'cancellation_reason'], $identifiers);
+        $this->redactModels(Models\DocumentRequest::where('user_id', $userId), ['reason', 'review_note', 'original_name'], $identifiers);
+        $this->redactModels(Models\TherapistContent::where('patient_id', $userId), ['title', 'body', 'url'], $identifiers);
+        Models\ParallelLayer::where('patient_id', $userId)->eachById(function ($layer) {
+            $layer->update(['content' => ['redacted' => true], 'edit_log' => array_map(function ($entry) {
+                $entry['details'] = [];
 
-        if ($user->therapist?->license_file_path !== null) {
-            $user->therapist->forceFill(['license_file_path' => null])->save();
+                return $entry;
+            }, $layer->edit_log ?? [])]);
+        });
+        DB::table('therapist_content_assignments')->where('patient_id', $userId)->delete();
+        Models\MoodLog::where('patient_id', $userId)->update(['notes' => null]);
+        Models\PatientModule::where('patient_id', $userId)->update(['homework' => null, 'homework_submitted_at' => null]);
+        Models\SafetyPlan::where('patient_id', $userId)->delete();
+        Models\Review::where('patient_id', $userId)->update(['comment' => null]);
+        $tickets = Models\Support::where('user_id', $userId)->get();
+        foreach ($tickets as $ticket) {
+            $ticket->update(['subject' => self::REDACTED, 'description' => self::REDACTED]);
         }
+        Models\SupportReply::whereIn('support_id', $tickets->pluck('id'))->orWhere('user_id', $userId)
+            ->eachById(fn ($reply) => $reply->update(['body' => self::REDACTED]));
     }
 
-    private function purgeConversations(User $user): void
+    private function redactModels($query, array $columns, array $identifiers): void
     {
-        $disk = Storage::disk(config('sakina.uploads_disk', 'local'));
+        $query->eachById(function ($row) use ($columns, $identifiers) {
+            foreach ($columns as $column) {
+                $row->{$column} = $this->redactValue($row->{$column}, $identifiers);
+            }
+            $row->save();
+        });
+    }
 
-        $conversations = Conversation::where('patient_id', $user->id)
-            ->orWhere('therapist_id', $user->id)
-            ->lockForUpdate()
-            ->get();
-
-        foreach ($conversations as $conversation) {
-            $directory = "chat/{$conversation->id}";
-
-            if ($disk->exists($directory) && (! $disk->deleteDirectory($directory) || $disk->exists($directory))) {
-                throw new \RuntimeException("Chat attachments [{$directory}] could not be deleted; anonymization aborted.");
+    private function redactValue(mixed $value, array $identifiers): mixed
+    {
+        if (is_array($value)) {
+            $result = [];
+            foreach ($value as $key => $item) {
+                $result[is_string($key) ? self::redact($key, $identifiers) : $key] = $this->redactValue($item, $identifiers);
             }
 
-            $conversation->messages()->delete();
-            $conversation->delete();
+            return $result;
+        }
+
+        return is_string($value) ? self::redact($value, $identifiers) : $value;
+    }
+
+    private function assertSafePath(string $path): void
+    {
+        if (! preg_match('#^(uploads|payment-proofs|licenses|chat)/[^\x00\\\\]+$#', $path)) {
+            throw new \RuntimeException('Unsafe owned file path; manual review required.');
+        }
+        foreach (explode('/', $path) as $segment) {
+            if (in_array($segment, ['', '.', '..'], true)) {
+                throw new \RuntimeException('Unsafe owned file path; manual review required.');
+            }
         }
     }
 
@@ -155,39 +186,6 @@ class AccountAnonymizer
             ->orWhereIn('therapy_session_id', DB::table('therapy_sessions')->select('id')->where('patient_id', $userId));
     }
 
-    private function redactFreeText(string $userId, array $identifiers): void
-    {
-        $tables = self::FREE_TEXT;
-        $tables['payments'] = [$this->paymentsOwnedBy($userId), ['note']];
-
-        foreach ($tables as $table => [$owner, $columns]) {
-            $query = DB::table($table);
-            $owner instanceof \Closure ? $query->where($owner) : $query->where($owner, $userId);
-            $rows = $query->get(array_merge(['id'], $columns));
-
-            foreach ($rows as $row) {
-                $update = [];
-
-                foreach ($columns as $column) {
-                    $original = $row->{$column};
-                    $redacted = $original === null ? null : self::redact($original, $identifiers);
-
-                    if ($redacted !== $original) {
-                        $update[$column] = $redacted;
-                    }
-                }
-
-                if ($update !== []) {
-                    DB::table($table)->where('id', $row->id)->update($update);
-                }
-            }
-        }
-    }
-
-    /**
-     * Strip direct identifiers from free text: known identifier strings,
-     * e-mail addresses and phone-number-like digit runs.
-     */
     public static function redact(string $text, array $identifiers = []): string
     {
         foreach ($identifiers as $identifier) {
@@ -196,7 +194,6 @@ class AccountAnonymizer
                 $text = str_ireplace($identifier, self::REDACTED, $text);
             }
         }
-
         $text = preg_replace('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', self::REDACTED, $text);
 
         return preg_replace('/\+?\d[\d\s\-().]{6,}\d/', self::REDACTED, $text);

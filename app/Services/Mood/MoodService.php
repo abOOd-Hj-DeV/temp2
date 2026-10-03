@@ -9,6 +9,7 @@ use App\Models\Patient;
 use App\Services\RedFlagService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**
@@ -23,6 +24,15 @@ class MoodService
     public function __construct(private RedFlagService $redFlags) {}
 
     public function log(Patient $patient, array $data): array
+    {
+        return DB::transaction(function () use ($patient, $data) {
+            $patient = Patient::whereKey($patient->user_id)->lockForUpdate()->firstOrFail();
+
+            return $this->storeLog($patient, $data);
+        });
+    }
+
+    private function storeLog(Patient $patient, array $data): array
     {
         $date = $data['log_date'] ?? now($patient->user?->timezone() ?? config('app.timezone', 'UTC'))->toDateString();
 
@@ -52,10 +62,12 @@ class MoodService
      */
     public function history(Patient $patient, int $days = 30): array
     {
-        $from = now()->subDays($days - 1)->startOfDay();
+        $today = $this->today($patient);
+        $from = $today->copy()->subDays($days - 1);
 
         $logs = MoodLog::where('patient_id', $patient->user_id)
             ->whereDate('log_date', '>=', $from->toDateString())
+            ->whereDate('log_date', '<=', $today->toDateString())
             ->orderByDesc('log_date')
             ->orderByDesc('created_at')
             ->get();
@@ -71,10 +83,12 @@ class MoodService
      */
     public function chart(Patient $patient, int $days = 30): array
     {
-        $from = now()->subDays($days - 1)->startOfDay();
+        $today = $this->today($patient);
+        $from = $today->copy()->subDays($days - 1);
 
         $logs = MoodLog::where('patient_id', $patient->user_id)
             ->whereDate('log_date', '>=', $from->toDateString())
+            ->whereDate('log_date', '<=', $today->toDateString())
             ->orderBy('log_date')
             ->orderBy('created_at')
             ->get();
@@ -82,7 +96,7 @@ class MoodService
         $byDate = $logs->groupBy(fn (MoodLog $l) => $l->log_date->toDateString());
         $series = [];
 
-        for ($d = $from->copy(); $d->lte(now()->startOfDay()); $d->addDay()) {
+        for ($d = $from->copy(); $d->lte($today); $d->addDay()) {
             $key = $d->toDateString();
             /** @var Collection<int, MoodLog>|null $day */
             $day = $byDate->get($key);
@@ -128,7 +142,8 @@ class MoodService
             return false;
         }
 
-        $streak = $this->lowStreak($patient);
+        $episode = $this->lowEpisode($patient);
+        $streak = $episode->count();
 
         if ($streak < $streakNeeded) {
             return false;
@@ -136,7 +151,8 @@ class MoodService
 
         $alreadyFlagged = MoodLog::where('patient_id', $patient->user_id)
             ->where('alert_sent', true)
-            ->whereDate('log_date', '>=', now()->subDays($streak)->toDateString())
+            ->whereDate('log_date', '>=', $episode->last()->log_date->toDateString())
+            ->whereDate('log_date', '<=', $episode->first()->log_date->toDateString())
             ->exists();
 
         if ($alreadyFlagged) {
@@ -157,9 +173,9 @@ class MoodService
     }
 
     /** Today or yesterday — anything older is history, not a live signal. */
-    private function isCurrent(Carbon|string $date): bool
+    private function today(Patient $patient): Carbon
     {
-        return Carbon::parse($date)->startOfDay()->greaterThanOrEqualTo(now()->startOfDay()->subDay());
+        return now($patient->user?->timezone() ?? config('app.timezone', 'UTC'))->startOfDay();
     }
 
     /**
@@ -170,23 +186,28 @@ class MoodService
      */
     private function lowStreak(Patient $patient): int
     {
+        return $this->lowEpisode($patient)->count();
+    }
+
+    private function lowEpisode(Patient $patient): Collection
+    {
+        $today = $this->today($patient);
         $threshold = (int) config('sakina.mood_alert_threshold', 3);
         $recent = MoodLog::where('patient_id', $patient->user_id)
-            ->whereDate('log_date', '<=', now()->toDateString())
-            ->whereDate('log_date', '>=', now()->subDays(14)->toDateString())
+            ->whereDate('log_date', '<=', $today->toDateString())
             ->orderByDesc('log_date')
             ->orderByDesc('created_at')
             ->get()
             ->unique(fn (MoodLog $l) => $l->log_date->toDateString())
             ->values();
 
-        $streak = 0;
+        $episode = collect();
         $expected = null;
 
         foreach ($recent as $entry) {
             $date = Carbon::parse($entry->log_date)->startOfDay();
 
-            if ($expected === null && ! $this->isCurrent($date)) {
+            if ($expected === null && $date->toDateString() < $today->copy()->subDay()->toDateString()) {
                 break;
             }
 
@@ -194,11 +215,11 @@ class MoodService
                 break;
             }
 
-            $streak++;
+            $episode->push($entry);
             $expected = $date->copy()->subDay();
         }
 
-        return $streak;
+        return $episode;
     }
 
     private function trend($logs): ?string

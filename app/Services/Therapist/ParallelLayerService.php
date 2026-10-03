@@ -5,6 +5,8 @@ namespace App\Services\Therapist;
 use App\Models\ParallelLayer;
 use App\Models\Therapist;
 use App\Services\AuditLogService;
+use App\Services\Patient\ClinicalEventDelivery;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**
@@ -31,28 +33,32 @@ class ParallelLayerService
 
     public function save(Therapist $therapist, string $patientId, array $content): ParallelLayer
     {
-        $patient = $this->clients->requireClient($therapist, $patientId);
+        return DB::transaction(function () use ($therapist, $patientId, $content) {
+            $patient = $this->clients->requireActiveClient($therapist, $patientId);
 
-        $layer = ParallelLayer::where('therapist_id', $therapist->user_id)
-            ->where('patient_id', $patient->user_id)
-            ->first();
+            $layer = ParallelLayer::where('therapist_id', $therapist->user_id)
+                ->where('patient_id', $patient->user_id)
+                ->lockForUpdate()
+                ->first();
 
-        if (! $layer) {
-            $layer = ParallelLayer::create([
-                'id' => (string) Str::uuid(),
-                'therapist_id' => $therapist->user_id,
-                'patient_id' => $patient->user_id,
-                'content' => $content,
-            ]);
-            $layer->addEditLog('created', []);
-        } else {
-            $layer->update(['content' => $content]);
-            $layer->addEditLog('updated', []);
-        }
+            if (! $layer) {
+                $layer = ParallelLayer::create([
+                    'id' => (string) Str::uuid(),
+                    'therapist_id' => $therapist->user_id,
+                    'patient_id' => $patient->user_id,
+                    'content' => $content,
+                ]);
+                $layer->addEditLog('created', []);
+            } else {
+                $layer->update(['content' => $content]);
+                $layer->addEditLog('updated', []);
+            }
 
-        $this->audit->record($therapist->user, AuditLogService::PARALLEL_LAYER_SAVED, $layer->id);
+            $this->audit->record($therapist->user, AuditLogService::PARALLEL_LAYER_SAVED, $layer->id);
+            app(ClinicalEventDelivery::class)->record($patientId, 'parallel_layer_updated', $layer->id);
 
-        return $layer->refresh();
+            return $layer->refresh();
+        });
     }
 
     public function toArray(ParallelLayer $layer): array

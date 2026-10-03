@@ -4,6 +4,7 @@
 
 namespace App\Models;
 
+use App\Casts\ClinicalEncrypted;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -22,7 +23,10 @@ class SafetyPlan extends Model
     ];
 
     protected $casts = [
-        'contact_info' => 'array',
+        'contact_info' => ClinicalEncrypted::class.':array',
+        'coping_strategies' => ClinicalEncrypted::class,
+        'emergency_contacts' => ClinicalEncrypted::class,
+        'warning_signs' => ClinicalEncrypted::class,
     ];
 
     /**
