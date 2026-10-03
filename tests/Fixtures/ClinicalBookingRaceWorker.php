@@ -27,9 +27,11 @@ require __DIR__.'/../../vendor/autoload.php';
 $app = require __DIR__.'/../../bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
 if (! $app->environment('testing') || DB::getDriverName() !== 'pgsql'
+    || DB::connection()->getPdo()->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'pgsql'
     || ! str_starts_with(DB::connection()->getDatabaseName(), 'clinical_')) {
     throw new RuntimeException('Clinical booking workers require a disposable PostgreSQL test database.');
 }
+fwrite(STDOUT, "driver-witness:framework=pgsql;pdo=pgsql\n");
 $payload = json_decode($argv[1], true, flags: JSON_THROW_ON_ERROR);
 Carbon::setTestNow(Carbon::parse('2026-10-03 12:00:00', 'UTC'));
 Http::preventStrayRequests();

@@ -28,6 +28,17 @@ trait ClinicalCorrectionFixtures
             || ($driver === 'pgsql' && str_starts_with($database, 'clinical_')))) {
             throw new \RuntimeException('Clinical fixtures require a disposable test database.');
         }
+        $expected = getenv('CLINICAL_EXPECTED_DRIVER') ?: $driver;
+        $pdo = DB::connection()->getPdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
+        static $witnessed = [];
+        $receipt = $expected.'/'.$driver.'/'.$pdo;
+        if (! isset($witnessed[$receipt])) {
+            $this->observed('driver-witness', ['expected' => $expected, 'framework' => $driver, 'pdo' => $pdo]);
+            $witnessed[$receipt] = true;
+        }
+        if ($driver !== $expected || $pdo !== $expected) {
+            throw new \RuntimeException("Clinical driver mismatch: expected {$expected}; framework {$driver}; PDO {$pdo}. No migrations were run.");
+        }
         $this->migrateCommittedDatabase();
     }
 
