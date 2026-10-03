@@ -8,9 +8,11 @@ use App\Models\Therapist;
 use App\Models\TherapistBlockedPeriod;
 use App\Models\TherapySession;
 use App\Services\AuditLogService;
+use App\Services\Session\BookingLocks;
 use App\Support\SessionClock;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -58,45 +60,51 @@ class TherapistBlockedPeriodService
             throw ValidationException::withMessages(['end_date' => 'A blocked period cannot exceed '.self::MAX_DAYS.' days.']);
         }
 
-        $overlaps = TherapistBlockedPeriod::where('therapist_id', $therapist->user_id)
-            ->whereDate('start_date', '<=', $end)
-            ->whereDate('end_date', '>=', $start)
-            ->exists();
+        return DB::transaction(function () use ($therapist, $data, $start, $end, $tz) {
+            $therapist = BookingLocks::therapists([$therapist->user_id])->firstOrFail();
+            $overlaps = TherapistBlockedPeriod::where('therapist_id', $therapist->user_id)
+                ->whereDate('start_date', '<=', $end)
+                ->whereDate('end_date', '>=', $start)
+                ->exists();
 
-        if ($overlaps) {
-            throw new ConflictException('This period overlaps an existing blocked period.');
-        }
+            if ($overlaps) {
+                throw new ConflictException('This period overlaps an existing blocked period.');
+            }
 
-        $booked = $this->bookedSessionsWithin($therapist, $start, $end, $tz);
+            $booked = $this->bookedSessionsWithin($therapist, $start, $end, $tz);
 
-        if ($booked > 0) {
-            throw ValidationException::withMessages([
-                'start_date' => "You have {$booked} booked session(s) in this period. Cancel or reschedule them first.",
+            if ($booked > 0) {
+                throw ValidationException::withMessages([
+                    'start_date' => "You have {$booked} booked session(s) in this period. Cancel or reschedule them first.",
+                ]);
+            }
+
+            $period = TherapistBlockedPeriod::create([
+                'therapist_id' => $therapist->user_id,
+                'start_date' => $start,
+                'end_date' => $end,
+                'reason' => isset($data['reason']) ? trim((string) $data['reason']) : null,
             ]);
-        }
 
-        $period = TherapistBlockedPeriod::create([
-            'therapist_id' => $therapist->user_id,
-            'start_date' => $start,
-            'end_date' => $end,
-            'reason' => isset($data['reason']) ? trim((string) $data['reason']) : null,
-        ]);
+            $this->audit->record($therapist->user_id, AuditLogService::THERAPIST_BLOCKED_PERIOD_CREATED, $period->id, [
+                'start_date' => $start, 'end_date' => $end,
+            ]);
 
-        $this->audit->record($therapist->user_id, AuditLogService::THERAPIST_BLOCKED_PERIOD_CREATED, $period->id, [
-            'start_date' => $start, 'end_date' => $end,
-        ]);
-
-        return $period;
+            return $period;
+        });
     }
 
     public function delete(Therapist $therapist, string $id): void
     {
-        $period = TherapistBlockedPeriod::where('therapist_id', $therapist->user_id)->whereKey($id)->firstOrFail();
-        $period->delete();
+        DB::transaction(function () use ($therapist, $id) {
+            $therapist = BookingLocks::therapists([$therapist->user_id])->firstOrFail();
+            $period = TherapistBlockedPeriod::where('therapist_id', $therapist->user_id)->whereKey($id)->lockForUpdate()->firstOrFail();
+            $period->delete();
 
-        $this->audit->record($therapist->user_id, AuditLogService::THERAPIST_BLOCKED_PERIOD_DELETED, $id, [
-            'start_date' => $period->start_date->toDateString(), 'end_date' => $period->end_date->toDateString(),
-        ]);
+            $this->audit->record($therapist->user_id, AuditLogService::THERAPIST_BLOCKED_PERIOD_DELETED, $id, [
+                'start_date' => $period->start_date->toDateString(), 'end_date' => $period->end_date->toDateString(),
+            ]);
+        });
     }
 
     public function toArray(TherapistBlockedPeriod $period): array

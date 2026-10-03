@@ -8,6 +8,8 @@ use App\Models\AuditLog;
 use App\Models\Patient;
 use App\Models\Subscription;
 use App\Models\Therapist;
+use App\Models\TherapistBlockedPeriod;
+use App\Models\TherapistSwitch;
 use App\Models\TherapySession;
 use App\Models\User;
 use App\Repositories\Contracts\TherapistRepositoryInterface;
@@ -15,10 +17,13 @@ use App\Services\Account\StaffAccountService;
 use App\Services\AuditLogService;
 use App\Services\NotificationService;
 use App\Services\Session\SessionService;
+use App\Services\Therapist\TherapistBlockedPeriodService;
 use App\Services\Therapist\TherapistService;
 use App\Services\Therapist\TherapistSwitchService;
 use App\Services\Wallet\WalletService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -325,5 +330,110 @@ class BookingCorrectionRegressionTest extends TestCase
             $this->assertSame(ApprovalStatus::PENDING, $therapist->fresh()->approval_status);
         }
         $this->assertSame(0, AuditLog::where('action', AuditLogService::THERAPIST_APPROVAL_DECIDED)->count());
+    }
+
+    private function rejectAuditInserts(): void
+    {
+        if (DB::getDriverName() === 'pgsql') {
+            DB::unprepared("CREATE OR REPLACE FUNCTION correction_reject_audit_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'synthetic audit outage'; END; $$ LANGUAGE plpgsql; CREATE TRIGGER correction_reject_audit_insert BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION correction_reject_audit_insert();");
+        } else {
+            DB::unprepared("CREATE TRIGGER correction_reject_audit_insert BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(ABORT, 'synthetic audit outage'); END;");
+        }
+    }
+
+    private function restoreAuditInserts(): void
+    {
+        DB::unprepared(DB::getDriverName() === 'pgsql'
+            ? 'DROP TRIGGER correction_reject_audit_insert ON audit_logs'
+            : 'DROP TRIGGER correction_reject_audit_insert');
+    }
+
+    private function auditInsertFailure(callable $operation): void
+    {
+        $this->assertSame(0, DB::transactionLevel());
+        try {
+            $operation();
+            $this->fail('The database must reject the mandatory audit insert.');
+        } catch (QueryException $exception) {
+            $this->assertStringContainsString('synthetic audit outage', $exception->getMessage());
+        }
+        $this->assertSame(0, DB::transactionLevel());
+    }
+
+    public function test_blocked_period_create_rolls_back_when_database_rejects_audit_then_recovers(): void
+    {
+        $therapist = $this->therapist();
+        $service = app(TherapistBlockedPeriodService::class);
+        $data = ['start_date' => '2026-01-05', 'end_date' => '2026-01-06', 'reason' => 'Synthetic absence'];
+        $this->rejectAuditInserts();
+        $this->auditInsertFailure(fn () => $service->create($therapist, $data));
+        $this->assertSame(0, TherapistBlockedPeriod::count());
+        $this->assertSame(0, AuditLog::count());
+        $this->restoreAuditInserts();
+        $period = $service->create($therapist, $data);
+        $this->assertSame(1, TherapistBlockedPeriod::count());
+        $audit = AuditLog::sole();
+        $this->assertSame(AuditLogService::THERAPIST_BLOCKED_PERIOD_CREATED, $audit->action);
+        $this->assertSame($therapist->user_id, $audit->user_id);
+        $this->assertSame($period->id, $audit->entity_id);
+        $this->assertSame(['start_date' => '2026-01-05', 'end_date' => '2026-01-06'], $audit->details);
+    }
+
+    public function test_blocked_period_delete_rolls_back_when_database_rejects_audit_then_recovers(): void
+    {
+        $therapist = $this->therapist();
+        $service = app(TherapistBlockedPeriodService::class);
+        $period = $service->create($therapist, ['start_date' => '2026-01-05', 'reason' => 'Synthetic absence']);
+        $this->rejectAuditInserts();
+        $this->auditInsertFailure(fn () => $service->delete($therapist, $period->id));
+        $this->assertSame(1, TherapistBlockedPeriod::whereKey($period->id)->count());
+        $this->assertSame('Synthetic absence', $period->fresh()->reason);
+        $this->assertSame(1, AuditLog::count());
+        $this->assertSame(0, AuditLog::where('action', AuditLogService::THERAPIST_BLOCKED_PERIOD_DELETED)->count());
+        $this->restoreAuditInserts();
+        $service->delete($therapist, $period->id);
+        $this->assertSame(0, TherapistBlockedPeriod::count());
+        $this->assertSame(2, AuditLog::count());
+        $audit = AuditLog::where('action', AuditLogService::THERAPIST_BLOCKED_PERIOD_DELETED)->sole();
+        $this->assertSame($therapist->user_id, $audit->user_id);
+        $this->assertSame($period->id, $audit->entity_id);
+        $this->assertSame(['start_date' => '2026-01-05', 'end_date' => '2026-01-05'], $audit->details);
+    }
+
+    public function test_switch_request_rolls_back_when_database_rejects_audit_and_notifies_only_after_commit(): void
+    {
+        $old = $this->therapist();
+        $target = $this->therapist();
+        $patient = $this->patient($old);
+        $subscription = $this->subscription($patient, $old);
+        $deliveries = [];
+        $this->mock(NotificationService::class, function ($mock) use (&$deliveries): void {
+            $mock->shouldReceive('deliver')->zeroOrMoreTimes()->andReturnUsing(function ($method, $switch) use (&$deliveries): void {
+                $deliveries[] = [
+                    'method' => $method, 'transaction_level' => DB::transactionLevel(),
+                    'switch_exists' => TherapistSwitch::whereKey($switch->id)->exists(),
+                    'audit_exists' => AuditLog::where('entity_id', $switch->id)->where('action', AuditLogService::THERAPIST_SWITCH_REQUESTED)->exists(),
+                ];
+            });
+        });
+        $service = app(TherapistSwitchService::class);
+        $this->rejectAuditInserts();
+        $this->auditInsertFailure(fn () => $service->request($patient, $target->user_id, 'Synthetic preference', $patient->user));
+        $this->assertSame([], $deliveries);
+        $this->assertSame(0, TherapistSwitch::count());
+        $this->assertSame(0, AuditLog::count());
+        $this->assertSame($old->user_id, $patient->fresh()->therapist_id);
+        $this->assertSame($old->user_id, $subscription->fresh()->therapist_id);
+        $this->restoreAuditInserts();
+        $switch = $service->request($patient, $target->user_id, 'Synthetic preference', $patient->user);
+        $this->assertSame(1, TherapistSwitch::count());
+        $audit = AuditLog::sole();
+        $this->assertSame($patient->user_id, $audit->user_id);
+        $this->assertSame($switch->id, $audit->entity_id);
+        $this->assertSame(['from' => $old->user_id, 'to' => $target->user_id], $audit->details);
+        $this->assertSame([[
+            'method' => 'therapistSwitchRequested', 'transaction_level' => 0,
+            'switch_exists' => true, 'audit_exists' => true,
+        ]], $deliveries);
     }
 }
