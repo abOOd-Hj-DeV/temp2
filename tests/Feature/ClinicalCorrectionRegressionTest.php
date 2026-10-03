@@ -612,6 +612,8 @@ final class ClinicalCorrectionRegressionTest extends TestCase
     public function test_session_report_failed_backfill_rolls_back_all_bodies_and_restores_immutability(string $entrypoint): void
     {
         [$session, $before] = $this->legacySessionReports(true);
+        $mood = MoodLog::create(['id' => Str::uuid(), 'patient_id' => $session->patient_id, 'log_date' => now()->toDateString(), 'score' => 8]);
+        DB::table('mood_logs')->where('id', $mood->id)->update(['notes' => 'Legacy collateral clinical note']);
         try {
             if ($entrypoint === 'migration') {
                 (require database_path('migrations/2026_10_03_220001_encrypt_clinical_session_reports.php'))->up();
@@ -623,6 +625,7 @@ final class ClinicalCorrectionRegressionTest extends TestCase
             $this->assertSame($before->toJson(), DB::table('booking_report_revisions')->orderBy('id')->get()->toJson());
             $this->assertSame('Legacy current session report', DB::table('therapy_sessions')->where('id', $session->id)->value('summary'));
         }
+        $this->assertSame('Legacy collateral clinical note', DB::table('mood_logs')->where('id', $mood->id)->value('notes'));
         $this->assertHistoryIsImmutable($before[0]->id);
     }
 
@@ -863,6 +866,8 @@ final class ClinicalCorrectionRegressionTest extends TestCase
     public function test_report_backfill_wrong_key_rolls_back_all_content_and_restores_history_guard(string $entrypoint): void
     {
         [$session, $history] = $this->legacySessionReports();
+        $mood = MoodLog::create(['id' => Str::uuid(), 'patient_id' => $session->patient_id, 'log_date' => now()->toDateString(), 'score' => 8]);
+        DB::table('mood_logs')->where('id', $mood->id)->update(['notes' => 'Legacy collateral clinical note']);
         DB::table('booking_report_revisions')->insert(['session_id' => $session->id, 'revision' => 3,
             'actor_id' => $session->therapist_id, 'previous_summary' => 'clinical:v1:'.Crypt::encryptString('Authenticated history'),
             'new_summary' => 'clinical:v1:'.Crypt::encryptString('Authenticated revision'),
@@ -880,6 +885,7 @@ final class ClinicalCorrectionRegressionTest extends TestCase
             Crypt::swap($original);
         }
         $this->assertSame(0, DB::transactionLevel());
+        $this->assertSame('Legacy collateral clinical note', DB::table('mood_logs')->where('id', $mood->id)->value('notes'));
         $this->assertSame($beforeSummary, DB::table('therapy_sessions')->where('id', $session->id)->value('summary'));
         $this->assertSame($beforeHistory, DB::table('booking_report_revisions')->orderBy('id')->get()->toJson());
         $this->assertHistoryIsImmutable($history->first()->id);

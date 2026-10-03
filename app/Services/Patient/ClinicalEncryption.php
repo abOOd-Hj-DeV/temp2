@@ -32,10 +32,12 @@ class ClinicalEncryption
     public function backfill(bool $rotate = false): void
     {
         $this->requireReportDriver();
-        foreach (self::FIELDS as $model => $columns) {
-            $this->backfillModel($model, $columns, $rotate);
-        }
-        $this->backfillSessionReports($rotate);
+        DB::transaction(function () use ($rotate) {
+            foreach (self::FIELDS as $model => $columns) {
+                $this->backfillModel($model, $columns, $rotate);
+            }
+            $this->backfillSessionReports($rotate);
+        });
     }
 
     public function backfillSessionReports(bool $rotate = false): void
