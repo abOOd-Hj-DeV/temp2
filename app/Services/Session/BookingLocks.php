@@ -8,19 +8,25 @@ use App\Models\Subscription;
 use App\Models\Therapist;
 use App\Models\TherapySession;
 use App\Models\User;
+use App\Services\Files\AccountFileFence;
 use Illuminate\Database\Eloquent\Collection;
 
 /**
- * Transaction lock order: patient user -> patient -> subscriptions (id) -> therapist users (id) -> therapists (user_id)
- * -> switch -> sessions (id) -> payments. Never acquire an earlier lock later.
+ * Transaction lock order: patient user -> patient -> subscriptions (id) ->
+ * therapist users (id) -> therapists (user_id) -> switch -> sessions (id)
+ * -> payments. Never acquire an earlier lock later.
  * The patient lock serializes package/assignment/schedule changes; therapist
  * locks serialize capacity and slots across patients. Call inside a transaction.
  */
 final class BookingLocks
 {
-    public static function patient(string $id): Patient
+    public static function patient(string $id, bool $requireAvailable = false): Patient
     {
-        User::whereKey($id)->lockForUpdate()->firstOrFail();
+        if ($requireAvailable) {
+            AccountFileFence::lock([$id]);
+        } else {
+            User::whereKey($id)->lockForUpdate()->firstOrFail();
+        }
 
         return Patient::whereKey($id)->lockForUpdate()->firstOrFail();
     }
@@ -32,7 +38,8 @@ final class BookingLocks
 
     public static function therapists(array $ids): Collection
     {
-        $ids = array_filter($ids);
+        $ids = array_values(array_unique(array_filter($ids)));
+        sort($ids);
         $users = User::whereIn('id', $ids)->orderBy('id')->lockForUpdate()->get()->keyBy('id');
         $therapists = Therapist::whereIn('user_id', $ids)->orderBy('user_id')->lockForUpdate()->get();
         foreach ($therapists as $therapist) {
